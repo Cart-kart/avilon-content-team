@@ -12,6 +12,13 @@ def read_file(path):
     except:
         return ""
 
+def get_trending_hashtags():
+    path = BASE / "reports/trending-hashtags.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except:
+        return []
+
 def parse_trend_report():
     content = read_file(BASE / "reports/trend-report.md")
     if not content:
@@ -403,6 +410,24 @@ DASHBOARD_HTML = """
     margin-left: 8px;
   }
 
+  /* Hashtag feed */
+  .hashtag-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: default;
+    transition: transform 0.1s;
+  }
+  .hashtag-pill:hover { transform: scale(1.05); }
+  .hashtag-pill.hot { background: #ff333322; border: 1px solid #ff3333; color: #ff6666; }
+  .hashtag-pill.rising { background: #ffaa0022; border: 1px solid #ffaa00; color: #ffcc44; }
+  .hashtag-pill.watch { background: #8888ff22; border: 1px solid #8888ff; color: #aaaaff; }
+  .hashtag-pill .pill-platform { font-size: 9px; color: #666; font-weight: normal; }
+
   /* ── Agent Command Center ── */
   .acc-tabs {
     display: flex;
@@ -625,6 +650,18 @@ DASHBOARD_HTML = """
       <div class="stat"><div class="stat-num" id="stat-hot">–</div><div class="stat-label">HOT Trends</div></div>
       <div class="stat"><div class="stat-num" id="stat-rising">–</div><div class="stat-label">RISING</div></div>
       <div class="stat"><div class="stat-num" id="stat-drafts">–</div><div class="stat-label">Drafts Ready</div></div>
+    </div>
+  </div>
+
+  <!-- Live Hashtag Feed -->
+  <div class="card half">
+    <div class="card-title">
+      <div class="dot" style="background:#ff3333;animation:pulse 1s infinite"></div>
+      🏷️ Trending Hashtags — Live Feed
+      <span id="hashtag-scan-time" style="font-size:10px;color:#444;font-weight:normal;margin-left:8px"></span>
+    </div>
+    <div id="hashtag-feed" style="display:flex;flex-wrap:wrap;gap:8px;min-height:60px">
+      <div class="empty">Waiting for Dollar's next scan...</div>
     </div>
   </div>
 
@@ -927,6 +964,21 @@ async function fetchData() {
   document.getElementById('stat-rising').textContent = data.trends.rising.length;
   document.getElementById('stat-drafts').textContent = data.draft ? 1 : 0;
 
+  // Live Hashtag Feed
+  const hashFeed = document.getElementById('hashtag-feed');
+  const hashTime = document.getElementById('hashtag-scan-time');
+  if (data.hashtags && data.hashtags.length) {
+    hashTime.textContent = '— Dollar scanned ' + new Date().toLocaleTimeString('th-TH');
+    hashFeed.innerHTML = data.hashtags.map(h => `
+      <span class="hashtag-pill ${h.urgency || 'watch'}" title="${h.signal || ''}">
+        ${h.tag}
+        <span class="pill-platform">${h.platform || ''}</span>
+      </span>`).join('');
+  } else {
+    hashTime.textContent = '';
+    hashFeed.innerHTML = '<div class="empty">Waiting for Dollar\'s next scan...</div>';
+  }
+
   // Pipeline status
   const hasDraft = data.draft !== null;
   const isApproved = data.draft?.status === 'APPROVED';
@@ -1188,6 +1240,7 @@ def api_data():
         "draft": parse_draft(),
         "log": parse_log(),
         "brief": parse_brief(),
+        "hashtags": get_trending_hashtags(),
         "timestamp": datetime.now().isoformat()
     })
 
