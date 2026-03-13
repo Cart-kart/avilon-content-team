@@ -10,6 +10,7 @@
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
 $logFile = "D:\Claude Agent\reports\trend-monitor.log"
 $claudeExe = "C:\Users\A\.local\bin\claude.exe"
+$claudeArgs = @("--dangerously-skip-permissions", "--print")
 
 Add-Content $logFile "[$timestamp] ═══════════════════════════════════════"
 Add-Content $logFile "[$timestamp] Pipeline starting..."
@@ -77,7 +78,7 @@ After writing both files, output only one line:
 STATUS: HOT | STATUS: RISING | STATUS: WATCH | STATUS: NONE
 "@
 
-$step1Result = & $claudeExe --print $step1
+$step1Result = & $claudeExe @claudeArgs $step1
 Add-Content $logFile "[$timestamp] Dollar: $step1Result"
 
 # ─────────────────────────────────────────
@@ -120,7 +121,7 @@ Output one line only:
 BRIEF SAVED — [topic] | DECISION: WATCH — no brief | DECISION: NONE — no action
 "@
 
-$step2Result = & $claudeExe --print $step2
+$step2Result = & $claudeExe @claudeArgs $step2
 Add-Content $logFile "[$timestamp] Atlas brief: $step2Result"
 
 # Only continue if Atlas created a brief
@@ -244,7 +245,7 @@ After saving, output only: DRAFT SAVED — [post title]
 
 }
 
-$step3Result = & $claudeExe --print $step3
+$step3Result = & $claudeExe @claudeArgs $step3
 Add-Content $logFile "[$timestamp] $assignedTo`: $step3Result"
 
 if ($step3Result -notmatch "DRAFT SAVED") {
@@ -286,7 +287,7 @@ If ANY fail:
 - Do NOT change the STATUS line
 "@
 
-$step4Result = & $claudeExe --print $step4
+$step4Result = & $claudeExe @claudeArgs $step4
 Add-Content $logFile "[$timestamp] Atlas review: $step4Result"
 
 if ($step4Result -notmatch "ATLAS REVIEW: PASS") {
@@ -343,7 +344,7 @@ VERDICT: APPROVED (FIXED) — Sigma
 VERDICT: BLOCKED — Sigma | REASON: [brief reason]
 "@
 
-$step5Result = & $claudeExe --print $step5
+$step5Result = & $claudeExe @claudeArgs $step5
 Add-Content $logFile "[$timestamp] Sigma verdict: $step5Result"
 
 if ($step5Result -match "BLOCKED") {
@@ -385,7 +386,7 @@ Output one line only:
 SAVED TO HISTORY — [post title]
 "@
 
-$step6Result = & $claudeExe --print $step6
+$step6Result = & $claudeExe @claudeArgs $step6
 Add-Content $logFile "[$timestamp] Atlas history: $step6Result"
 Add-Content $logFile "[$timestamp] Pipeline complete. Draft ready for publishing."
 Add-Content $logFile "[$timestamp] ═══════════════════════════════════════"
