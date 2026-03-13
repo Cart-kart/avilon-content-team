@@ -54,7 +54,7 @@ def parse_draft():
     meta = {}
     lines = content.splitlines()
     for line in lines:
-        for key in ["TREND URGENCY", "DEADLINE", "GENERATED", "STATUS"]:
+        for key in ["TREND URGENCY", "DEADLINE", "GENERATED", "STATUS", "WRITTEN BY"]:
             if line.startswith(key + ":"):
                 meta[key.lower().replace(" ", "_")] = line.split(":", 1)[1].strip()
 
@@ -135,6 +135,7 @@ DASHBOARD_HTML = """
   }
   header h1 { font-size: 20px; color: #00d4ff; letter-spacing: 1px; }
   header h1 span { color: #fff; }
+  .header-roster { font-size: 11px; color: #555; margin-top: 4px; letter-spacing: 0.5px; }
   .live-badge {
     background: #00ff8833;
     border: 1px solid #00ff88;
@@ -569,7 +570,10 @@ DASHBOARD_HTML = """
 <body>
 
 <header>
-  <h1>avilon<span>ROBOTICS</span> — Content Team Dashboard</h1>
+  <div>
+    <h1>avilon<span>ROBOTICS</span> — Content Team Dashboard</h1>
+    <div class="header-roster">Dollar · Atlas · Vector · Spark · Sigma</div>
+  </div>
   <div style="display:flex;align-items:center;gap:16px">
     <span id="clock" style="font-size:13px;color:#666"></span>
     <div class="live-badge">● LIVE</div>
@@ -584,27 +588,27 @@ DASHBOARD_HTML = """
     <div class="pipeline" id="pipeline">
       <div class="step">
         <div class="step-icon" id="s1">📡</div>
-        <div class="step-label"><strong>Trend Monitor</strong>Scanning trends</div>
+        <div class="step-label"><strong>Dollar</strong>Trend Monitor</div>
       </div>
       <div class="arrow">→</div>
       <div class="step">
         <div class="step-icon" id="s2">🎬</div>
-        <div class="step-label"><strong>Editor in Chief</strong>Assigning briefs</div>
+        <div class="step-label"><strong>Atlas</strong>Editor in Chief</div>
       </div>
       <div class="arrow">→</div>
       <div class="step">
         <div class="step-icon" id="s3">✍️</div>
-        <div class="step-label"><strong>Tech Writer</strong>Writing post</div>
+        <div class="step-label"><strong>Vector</strong>Tech Writer</div>
       </div>
       <div class="arrow">→</div>
       <div class="step">
         <div class="step-icon" id="s4">📢</div>
-        <div class="step-label"><strong>Ad Writer</strong>Ad copy (3 variants)</div>
+        <div class="step-label"><strong>Spark</strong>Ad Writer</div>
       </div>
       <div class="arrow">→</div>
       <div class="step">
         <div class="step-icon" id="s5">✅</div>
-        <div class="step-label"><strong>Proofreader</strong>QA & approve</div>
+        <div class="step-label"><strong>Sigma</strong>Proofreader</div>
       </div>
       <div class="arrow">→</div>
       <div class="step">
@@ -686,10 +690,11 @@ DASHBOARD_HTML = """
   <div class="card full">
     <div class="card-title">
       <div class="dot" style="background:#ffaa00"></div>
-      Team Feedback
+      Team Feedback on Draft
       <span id="feedback-count" style="font-size:11px;color:#555;font-weight:normal;margin-left:4px"></span>
       <button class="clear-btn" onclick="clearFeedback()">🗑 Clear all</button>
     </div>
+    <div style="font-size:11px;color:#555;margin-bottom:14px;margin-top:-8px">Leave comments for the team — Dollar, Atlas, Vector, Spark, Sigma</div>
 
     <div class="feedback-list" id="feedback-list">
       <div class="empty">No feedback yet — be the first to comment</div>
@@ -718,11 +723,11 @@ DASHBOARD_HTML = """
 
     <!-- Agent tabs -->
     <div class="acc-tabs">
-      <button class="acc-tab active" onclick="switchAccTab('trend-monitor', this)">📡 Trend Monitor</button>
-      <button class="acc-tab" onclick="switchAccTab('editor-in-chief', this)">🎬 Editor in Chief</button>
-      <button class="acc-tab" onclick="switchAccTab('tech-writer', this)">✍️ Tech Writer</button>
-      <button class="acc-tab" onclick="switchAccTab('ad-writer', this)">📢 Ad Writer</button>
-      <button class="acc-tab" onclick="switchAccTab('proofreader', this)">✅ Proofreader</button>
+      <button class="acc-tab active" onclick="switchAccTab('trend-monitor', this)">📡 Dollar (Trend Monitor)</button>
+      <button class="acc-tab" onclick="switchAccTab('editor-in-chief', this)">🎬 Atlas (Editor in Chief)</button>
+      <button class="acc-tab" onclick="switchAccTab('tech-writer', this)">✍️ Vector (Tech Writer)</button>
+      <button class="acc-tab" onclick="switchAccTab('ad-writer', this)">📢 Spark (Ad Writer)</button>
+      <button class="acc-tab" onclick="switchAccTab('proofreader', this)">✅ Sigma (Proofreader)</button>
     </div>
 
     <!-- trend-monitor panel -->
@@ -730,14 +735,14 @@ DASHBOARD_HTML = """
       <div class="acc-agent-header">
         <div class="acc-agent-icon">📡</div>
         <div>
-          <div class="acc-agent-name">Trend Monitor</div>
-          <div class="acc-agent-role">Scans social media, news, and industry sources for emerging trends relevant to logistics &amp; robotics in Thailand.</div>
+          <div class="acc-agent-name">Dollar</div>
+          <div class="acc-agent-role">Dollar — Age 23 | Gen Z | Fast, always online, Thai trend native</div>
         </div>
       </div>
       <div class="acc-body">
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
-          <textarea class="acc-textarea" id="cmd-trend-monitor" placeholder="e.g. Scan for Thailand logistics automation trends this week..."></textarea>
+          <textarea class="acc-textarea" id="cmd-trend-monitor" placeholder="e.g. Scan Thai logistics trends on X right now..."></textarea>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <button class="acc-send-btn" onclick="sendAgentCommand('trend-monitor')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-trend-monitor">Command queued ✓</span>
@@ -745,8 +750,8 @@ DASHBOARD_HTML = """
           <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
           <div class="acc-suggestions">
             <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','🔍 Scan trends now')">🔍 Scan trends now</button>
-            <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','📊 Weekly trend report')">📊 Weekly trend report</button>
-            <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','🇹🇭 Thailand logistics news only')">🇹🇭 Thailand logistics news only</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','🇹🇭 Thailand logistics only')">🇹🇭 Thailand logistics only</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','📊 Full weekly report')">📊 Full weekly report</button>
           </div>
         </div>
         <div class="acc-output-col">
@@ -763,14 +768,14 @@ DASHBOARD_HTML = """
       <div class="acc-agent-header">
         <div class="acc-agent-icon">🎬</div>
         <div>
-          <div class="acc-agent-name">Editor in Chief</div>
-          <div class="acc-agent-role">Runs the weekly content campaign, assigns briefs to writers, and manages the editorial calendar.</div>
+          <div class="acc-agent-name">Atlas</div>
+          <div class="acc-agent-role">Atlas — Age 42 | Gen X | Strategic, decisive, runs the whole editorial machine</div>
         </div>
       </div>
       <div class="acc-body">
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
-          <textarea class="acc-textarea" id="cmd-editor-in-chief" placeholder="e.g. Run this week's campaign and assign a KNOWLEDGE post on Photon Inventra..."></textarea>
+          <textarea class="acc-textarea" id="cmd-editor-in-chief" placeholder="e.g. Run this week's campaign — assign KNOWLEDGE post on Photon Inventra..."></textarea>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <button class="acc-send-btn" onclick="sendAgentCommand('editor-in-chief')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-editor-in-chief">Command queued ✓</span>
@@ -778,7 +783,7 @@ DASHBOARD_HTML = """
           <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
           <div class="acc-suggestions">
             <button class="acc-suggestion-btn" onclick="fillCmd('editor-in-chief','🚀 Run weekly campaign')">🚀 Run weekly campaign</button>
-            <button class="acc-suggestion-btn" onclick="fillCmd('editor-in-chief','📋 Assign Photon Inventra post')">📋 Assign Photon Inventra post</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('editor-in-chief','📋 Assign TRENDJACKING post')">📋 Assign TRENDJACKING post</button>
             <button class="acc-suggestion-btn" onclick="fillCmd('editor-in-chief','📅 Plan next 4 posts')">📅 Plan next 4 posts</button>
           </div>
         </div>
@@ -796,14 +801,14 @@ DASHBOARD_HTML = """
       <div class="acc-agent-header">
         <div class="acc-agent-icon">✍️</div>
         <div>
-          <div class="acc-agent-name">Tech Writer</div>
-          <div class="acc-agent-role">Writes Facebook posts — KNOWLEDGE articles, SOFT SELL stories, and TRENDJACKING content.</div>
+          <div class="acc-agent-name">Vector</div>
+          <div class="acc-agent-role">Vector — Age 35 | Millennial | Clear, structured, turns tech specs into readable posts</div>
         </div>
       </div>
       <div class="acc-body">
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
-          <textarea class="acc-textarea" id="cmd-tech-writer" placeholder="e.g. Write a KNOWLEDGE post about warehouse automation for SMEs in Thailand..."></textarea>
+          <textarea class="acc-textarea" id="cmd-tech-writer" placeholder="e.g. Write KNOWLEDGE post about warehouse drone technology for Thai SMEs..."></textarea>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <button class="acc-send-btn" onclick="sendAgentCommand('tech-writer')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-tech-writer">Command queued ✓</span>
@@ -829,23 +834,23 @@ DASHBOARD_HTML = """
       <div class="acc-agent-header">
         <div class="acc-agent-icon">📢</div>
         <div>
-          <div class="acc-agent-name">Ad Writer</div>
-          <div class="acc-agent-role">Creates HARD SELL ad copy, CTA variants, and promotional posts for avilonROBOTICS products.</div>
+          <div class="acc-agent-name">Spark</div>
+          <div class="acc-agent-role">Spark — Age 29 | Millennial | High-energy, benefit-led, punchy CTA specialist</div>
         </div>
       </div>
       <div class="acc-body">
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
-          <textarea class="acc-textarea" id="cmd-ad-writer" placeholder="e.g. Write 3 HARD SELL variants for Photon Inventra demo offer..."></textarea>
+          <textarea class="acc-textarea" id="cmd-ad-writer" placeholder="e.g. Write 3 HARD SELL variants for Photon Inventra demo — benefit-led..."></textarea>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <button class="acc-send-btn" onclick="sendAgentCommand('ad-writer')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-ad-writer">Command queued ✓</span>
           </div>
           <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
           <div class="acc-suggestions">
-            <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','📢 Write HARD SELL (3 variants)')">📢 Write HARD SELL (3 variants)</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','📢 3 HARD SELL variants')">📢 3 HARD SELL variants</button>
             <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','🎯 Photon Inventra CTA')">🎯 Photon Inventra CTA</button>
-            <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','💰 Promo post')">💰 Promo post</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','⚡ Urgency-led promo post')">⚡ Urgency-led promo post</button>
           </div>
         </div>
         <div class="acc-output-col">
@@ -862,23 +867,23 @@ DASHBOARD_HTML = """
       <div class="acc-agent-header">
         <div class="acc-agent-icon">✅</div>
         <div>
-          <div class="acc-agent-name">Proofreader</div>
-          <div class="acc-agent-role">Reviews drafts for quality, tone, grammar, and brand consistency. Approves or flags for revision.</div>
+          <div class="acc-agent-name">Sigma</div>
+          <div class="acc-agent-role">Sigma — Age 38 | Millennial | Detail-obsessed, zero tolerance for errors, final gatekeeper</div>
         </div>
       </div>
       <div class="acc-body">
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
-          <textarea class="acc-textarea" id="cmd-proofreader" placeholder="e.g. Review the latest draft and check tone and hashtags..."></textarea>
+          <textarea class="acc-textarea" id="cmd-proofreader" placeholder="e.g. Review latest draft — full QA check on tone, facts, and hashtags..."></textarea>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <button class="acc-send-btn" onclick="sendAgentCommand('proofreader')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-proofreader">Command queued ✓</span>
           </div>
           <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
           <div class="acc-suggestions">
-            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','✅ Review latest draft')">✅ Review latest draft</button>
-            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','🔍 Full QA check')">🔍 Full QA check</button>
-            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','📝 Fix and approve')">📝 Fix and approve</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','✅ Review & approve latest draft')">✅ Review & approve latest draft</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','🔍 Full QA — facts + tone + hashtags')">🔍 Full QA — facts + tone + hashtags</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','🔄 Fix and approve')">🔄 Fix and approve</button>
           </div>
         </div>
         <div class="acc-output-col">
@@ -902,6 +907,14 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
+const AGENT_NAMES = {
+  'trend-monitor': 'Dollar',
+  'editor-in-chief': 'Atlas',
+  'tech-writer': 'Vector',
+  'ad-writer': 'Spark',
+  'proofreader': 'Sigma'
+};
+
 async function fetchData() {
   const res = await fetch('/api/data');
   const data = await res.json();
@@ -952,10 +965,22 @@ async function fetchData() {
   // Draft
   const ds = document.getElementById('draft-section');
   if (data.draft) {
-    const statusClass = data.draft.status === 'APPROVED' ? 'approved' : 'pending';
+    const st = data.draft.status || '';
+    let statusDisplay = '';
+    if (st.includes('APPROVED')) {
+      statusDisplay = '<span style="color:#00ff88">✅ Approved by Sigma</span>';
+    } else if (st.includes('BLOCKED')) {
+      statusDisplay = '<span style="color:#ff6666">🚫 Blocked by Sigma — needs review</span>';
+    } else if (st.includes('PENDING')) {
+      statusDisplay = '<span style="color:#ffcc44">⏳ Pending Sigma review</span>';
+    } else {
+      statusDisplay = `<span>${st || '—'}</span>`;
+    }
+    const writtenBy = data.draft.written_by ? `<div class="meta-pill"><strong>Written by</strong> Vector</div>` : '';
     ds.innerHTML = `
       <div class="draft-meta">
-        <div class="meta-pill"><strong>Status:</strong> <span class="${statusClass}">${data.draft.status || '—'}</span></div>
+        <div class="meta-pill"><strong>Status:</strong> ${statusDisplay}</div>
+        ${writtenBy}
         <div class="meta-pill"><strong>Urgency:</strong> ${data.draft.trend_urgency || '—'}</div>
         <div class="meta-pill"><strong>Deadline:</strong> ${data.draft.deadline || '—'}</div>
         <div class="meta-pill"><strong>Generated:</strong> ${data.draft.generated || '—'}</div>
@@ -1095,7 +1120,7 @@ async function loadAgentCommands() {
     const statusClass = { pending: 'pending', done: 'done', error: 'error' };
     el.innerHTML = items.map(c => `
       <div class="acc-cmd-item">
-        <span class="acc-cmd-agent">${c.agent}</span>
+        <span class="acc-cmd-agent">${AGENT_NAMES[c.agent] || c.agent}</span>
         <span class="acc-cmd-text">${c.command}</span>
         <span class="acc-cmd-time">${c.timestamp ? c.timestamp.replace('T',' ').slice(0,16) : ''}</span>
         <span class="acc-cmd-status ${statusClass[c.status] || 'pending'}">${c.status || 'pending'}</span>
