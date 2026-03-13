@@ -1,5 +1,5 @@
-from flask import Flask, jsonify, render_template_string
-import os, re
+from flask import Flask, jsonify, render_template_string, request
+import os, re, json
 from datetime import datetime
 from pathlib import Path
 
@@ -79,6 +79,17 @@ def parse_log():
         return []
     lines = [l.strip() for l in content.splitlines() if l.strip()]
     return lines[-20:]  # last 20 entries
+
+def get_feedback():
+    path = BASE / "drafts/feedback.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except:
+        return []
+
+def save_feedback(feedback_list):
+    path = BASE / "drafts/feedback.json"
+    path.write_text(json.dumps(feedback_list, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def parse_brief():
     content = read_file(BASE / "plans/current-brief.md")
@@ -304,6 +315,80 @@ DASHBOARD_HTML = """
     transition: all 0.2s;
   }
   .copy-btn:hover { background: #00d4ff33; }
+
+  /* Feedback */
+  .feedback-list { max-height: 260px; overflow-y: auto; margin-bottom: 14px; }
+  .feedback-item {
+    background: #0f1117;
+    border: 1px solid #ffffff08;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+  .feedback-item .fb-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .fb-author { font-size: 12px; font-weight: 700; color: #00d4ff; }
+  .fb-time { font-size: 11px; color: #555; }
+  .fb-text { font-size: 13px; color: #ccc; line-height: 1.6; }
+  .fb-verdict {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-top: 6px;
+  }
+  .fb-verdict.approve { background: #00ff8822; border: 1px solid #00ff88; color: #00ff88; }
+  .fb-verdict.revise { background: #ff333322; border: 1px solid #ff3333; color: #ff6666; }
+  .fb-verdict.comment { background: #ffffff11; border: 1px solid #ffffff22; color: #888; }
+
+  .feedback-form { display: flex; flex-direction: column; gap: 10px; }
+  .feedback-form input, .feedback-form textarea, .feedback-form select {
+    background: #0f1117;
+    border: 1px solid #ffffff15;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: 'Segoe UI', sans-serif;
+    outline: none;
+    transition: border 0.2s;
+  }
+  .feedback-form input:focus, .feedback-form textarea:focus, .feedback-form select:focus {
+    border-color: #00d4ff55;
+  }
+  .feedback-form textarea { resize: vertical; min-height: 80px; }
+  .feedback-form select option { background: #1a1f2e; }
+  .fb-row { display: flex; gap: 10px; }
+  .fb-row input { flex: 1; }
+  .fb-row select { flex: 0 0 140px; }
+  .submit-btn {
+    background: linear-gradient(90deg, #00d4ff22, #00ff8822);
+    border: 1px solid #00d4ff55;
+    color: #00d4ff;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    align-self: flex-end;
+  }
+  .submit-btn:hover { background: linear-gradient(90deg, #00d4ff33, #00ff8833); }
+  .clear-btn {
+    background: transparent;
+    border: 1px solid #ff333344;
+    color: #ff6666;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+    margin-left: 8px;
+  }
 </style>
 </head>
 <body>
@@ -422,6 +507,33 @@ DASHBOARD_HTML = """
     <div class="refresh-time" id="last-refresh"></div>
   </div>
 
+  <!-- Feedback Box -->
+  <div class="card full">
+    <div class="card-title">
+      <div class="dot" style="background:#ffaa00"></div>
+      Team Feedback
+      <span id="feedback-count" style="font-size:11px;color:#555;font-weight:normal;margin-left:4px"></span>
+      <button class="clear-btn" onclick="clearFeedback()">🗑 Clear all</button>
+    </div>
+
+    <div class="feedback-list" id="feedback-list">
+      <div class="empty">No feedback yet — be the first to comment</div>
+    </div>
+
+    <div class="feedback-form">
+      <div class="fb-row">
+        <input type="text" id="fb-author" placeholder="Your name (e.g. ฟ้าใส, P'Arm...)" maxlength="40">
+        <select id="fb-verdict">
+          <option value="comment">💬 Comment</option>
+          <option value="approve">✅ Approve</option>
+          <option value="revise">🔄 Needs Revision</option>
+        </select>
+      </div>
+      <textarea id="fb-text" placeholder="Write your feedback on this draft... (e.g. แก้ hashtag, เพิ่ม CTA, โทนดีแล้ว)"></textarea>
+      <button class="submit-btn" onclick="submitFeedback()">Send Feedback →</button>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -514,9 +626,57 @@ function copyDraft() {
   }
 }
 
+async function loadFeedback() {
+  const res = await fetch('/api/feedback');
+  const items = await res.json();
+  const el = document.getElementById('feedback-list');
+  const count = document.getElementById('feedback-count');
+  count.textContent = items.length ? `(${items.length})` : '';
+  if (!items.length) {
+    el.innerHTML = '<div class="empty">No feedback yet — be the first to comment</div>';
+    return;
+  }
+  const verdictLabel = { approve: '✅ Approved', revise: '🔄 Needs Revision', comment: '💬 Comment' };
+  el.innerHTML = items.map((f, i) => `
+    <div class="feedback-item">
+      <div class="fb-header">
+        <span class="fb-author">${f.author || 'Anonymous'}</span>
+        <span class="fb-time">${f.time}</span>
+      </div>
+      <div class="fb-text">${f.text}</div>
+      <span class="fb-verdict ${f.verdict}">${verdictLabel[f.verdict] || '💬 Comment'}</span>
+    </div>`).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+async function submitFeedback() {
+  const author = document.getElementById('fb-author').value.trim() || 'Anonymous';
+  const text = document.getElementById('fb-text').value.trim();
+  const verdict = document.getElementById('fb-verdict').value;
+  if (!text) { alert('Please write your feedback first'); return; }
+
+  await fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ author, text, verdict })
+  });
+
+  document.getElementById('fb-text').value = '';
+  document.getElementById('fb-verdict').value = 'comment';
+  loadFeedback();
+}
+
+async function clearFeedback() {
+  if (!confirm('Clear all feedback? This cannot be undone.')) return;
+  await fetch('/api/feedback/clear', { method: 'POST' });
+  loadFeedback();
+}
+
 // Auto-refresh every 60 seconds
 fetchData();
+loadFeedback();
 setInterval(fetchData, 60000);
+setInterval(loadFeedback, 30000);
 setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleString('th-TH');
 }, 1000);
@@ -528,6 +688,28 @@ setInterval(() => {
 @app.route("/")
 def index():
     return render_template_string(DASHBOARD_HTML)
+
+@app.route("/api/feedback", methods=["GET"])
+def get_feedback_route():
+    return jsonify(get_feedback())
+
+@app.route("/api/feedback", methods=["POST"])
+def post_feedback():
+    data = request.get_json(force=True, silent=True) or request.form.to_dict()
+    items = get_feedback()
+    items.append({
+        "author": data.get("author", "Anonymous"),
+        "text": data.get("text", ""),
+        "verdict": data.get("verdict", "comment"),
+        "time": datetime.now().strftime("%d %b %Y %H:%M")
+    })
+    save_feedback(items)
+    return jsonify({"ok": True})
+
+@app.route("/api/feedback/clear", methods=["POST"])
+def clear_feedback():
+    save_feedback([])
+    return jsonify({"ok": True})
 
 @app.route("/api/data")
 def api_data():
