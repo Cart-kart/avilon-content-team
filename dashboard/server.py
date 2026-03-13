@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, render_template_string, request
-import os, re, json, uuid
+import os, re, json, uuid, subprocess, threading
 from datetime import datetime
 from pathlib import Path
 
@@ -724,6 +724,62 @@ DASHBOARD_HTML = """
   </div>
 
   <!-- Feedback Box -->
+  <!-- URGENT NEWS BOX -->
+  <div class="card full" id="urgent-box" style="border-color:#ff333344;background:linear-gradient(135deg,#1a1f2e,#1f1520)">
+    <div class="card-title">
+      <div class="dot" style="background:#ff3333;animation:pulse 0.8s infinite"></div>
+      🚨 Urgent Company News — Push to Atlas Now
+      <span id="urgent-status-badge" style="margin-left:12px;font-size:11px;font-weight:normal;color:#888"></span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <!-- Input form -->
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;gap:10px">
+          <div style="flex:1">
+            <div class="acc-label" style="margin-bottom:4px">Post Type</div>
+            <select id="urgent-type" style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none">
+              <option value="NEWS">📰 Company News</option>
+              <option value="SUCCESS">🏆 Success / Achievement</option>
+              <option value="PARTNERSHIP">🤝 Partnership / MOU</option>
+              <option value="EVENT">🎉 Event / Exhibition</option>
+              <option value="ANNOUNCEMENT">📣 Announcement</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <div class="acc-label" style="margin-bottom:4px">Submitted by</div>
+            <input type="text" id="urgent-submitter" placeholder="Your name..." style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none">
+          </div>
+        </div>
+        <div>
+          <div class="acc-label" style="margin-bottom:4px">Headline / News Title *</div>
+          <input type="text" id="urgent-headline" placeholder="e.g. avilonROBOTICS signs MOU with Bangkok Airways for drone delivery expansion..." style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:10px 12px;color:#e0e0e0;font-size:13px;outline:none">
+        </div>
+        <div>
+          <div class="acc-label" style="margin-bottom:4px">News Details (optional but recommended)</div>
+          <textarea id="urgent-details" placeholder="Add context — who, what, where, when, why. Any specific message or quote to include..." style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:10px 12px;color:#e0e0e0;font-size:13px;outline:none;resize:vertical;min-height:80px;font-family:Segoe UI,sans-serif"></textarea>
+        </div>
+        <button id="urgent-push-btn" onclick="pushUrgentNews()" style="background:linear-gradient(90deg,#ff333322,#ff660022);border:1px solid #ff3333;color:#ff6666;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:all 0.2s;align-self:flex-start">
+          🚨 Push to Atlas — Generate Post Now
+        </button>
+        <div id="urgent-confirm" style="font-size:12px;color:#00ff88;display:none;font-weight:700"></div>
+      </div>
+
+      <!-- Draft output -->
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="acc-label">Draft Output — After Pipeline Completes</div>
+        <div id="urgent-pipeline-status" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px"></div>
+        <div id="urgent-draft-output" style="background:#0f1117;border:1px solid #ffffff08;border-radius:8px;padding:12px;min-height:140px;max-height:280px;overflow-y:auto;font-size:13px;color:#888;line-height:1.7;white-space:pre-wrap">
+          Waiting for urgent news push...
+        </div>
+        <button id="urgent-copy-btn" onclick="copyUrgentDraft()" style="display:none;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;align-self:flex-start">
+          📋 Copy Post
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Team Feedback on Draft -->
   <div class="card full">
     <div class="card-title">
       <div class="dot" style="background:#ffaa00"></div>
@@ -1192,6 +1248,105 @@ async function loadAgentCommands() {
   }
 }
 
+// ── Urgent News ──
+let urgentPolling = null;
+
+async function pushUrgentNews() {
+  const headline = document.getElementById('urgent-headline').value.trim();
+  const details = document.getElementById('urgent-details').value.trim();
+  const type = document.getElementById('urgent-type').value;
+  const submitter = document.getElementById('urgent-submitter').value.trim() || 'Dashboard User';
+  if (!headline) {
+    document.getElementById('urgent-headline').style.borderColor = '#ff3333';
+    setTimeout(() => document.getElementById('urgent-headline').style.borderColor = '#ff333344', 1500);
+    return;
+  }
+  const btn = document.getElementById('urgent-push-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Sending to Atlas...';
+  document.getElementById('urgent-draft-output').textContent = 'Atlas is reading your news...';
+  document.getElementById('urgent-copy-btn').style.display = 'none';
+
+  try {
+    const res = await fetch('/api/urgent', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ type, headline, details, submitted_by: submitter })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      const conf = document.getElementById('urgent-confirm');
+      conf.textContent = '✅ Sent! Atlas → Vector → Sigma pipeline running...';
+      conf.style.display = 'block';
+      startUrgentPolling();
+    } else {
+      btn.disabled = false;
+      btn.textContent = '🚨 Push to Atlas — Generate Post Now';
+      alert(data.error || 'Error — please try again');
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '🚨 Push to Atlas — Generate Post Now';
+    alert('Server error — is the dashboard running?');
+  }
+}
+
+function startUrgentPolling() {
+  if (urgentPolling) clearInterval(urgentPolling);
+  urgentPolling = setInterval(checkUrgentStatus, 4000);
+  checkUrgentStatus();
+}
+
+async function checkUrgentStatus() {
+  try {
+    const res = await fetch('/api/urgent/status');
+    const data = await res.json();
+    const pipeline = data.pipeline;
+    const statusEl = document.getElementById('urgent-status-badge');
+    const stepsEl = document.getElementById('urgent-pipeline-status');
+    const outputEl = document.getElementById('urgent-draft-output');
+    const btn = document.getElementById('urgent-push-btn');
+
+    const steps = [
+      {id: 'ps-atlas', label: 'Atlas', done: pipeline.step && pipeline.step !== 'Atlas assigning...'},
+      {id: 'ps-vector', label: 'Vector', done: pipeline.step && !pipeline.step.includes('Vector') && !pipeline.step.includes('Atlas')},
+      {id: 'ps-sigma', label: 'Sigma', done: pipeline.status === 'done'}
+    ];
+
+    stepsEl.innerHTML = ['Atlas 🎬','Vector ✍️','Sigma ✅'].map((s,i) => {
+      const isDone = pipeline.status === 'done' || (i === 0 && pipeline.step && pipeline.step.includes('Vector')) || (i <= 1 && pipeline.step && pipeline.step.includes('Sigma'));
+      const isActive = pipeline.status === 'running' && pipeline.step && pipeline.step.toLowerCase().includes(s.split(' ')[0].toLowerCase());
+      const cls = isDone ? 'approved' : isActive ? 'pending' : '';
+      return `<span class="fb-verdict ${cls}" style="font-size:11px">${s}</span>`;
+    }).join(' → ');
+
+    if (pipeline.status === 'running') {
+      statusEl.textContent = '⏳ ' + (pipeline.step || 'Running...');
+      outputEl.textContent = pipeline.step || 'Pipeline running...';
+    } else if (pipeline.status === 'done') {
+      statusEl.textContent = '✅ Done — ' + (pipeline.last || '');
+      clearInterval(urgentPolling);
+      btn.disabled = false;
+      btn.textContent = '🚨 Push to Atlas — Generate Post Now';
+      if (data.draft && data.draft.body) {
+        outputEl.textContent = data.draft.body;
+        document.getElementById('urgent-copy-btn').style.display = 'inline-block';
+      }
+    }
+  } catch(e) {}
+}
+
+function copyUrgentDraft() {
+  const txt = document.getElementById('urgent-draft-output').textContent;
+  navigator.clipboard.writeText(txt);
+  const btn = document.getElementById('urgent-copy-btn');
+  btn.textContent = '✅ Copied!';
+  setTimeout(() => btn.textContent = '📋 Copy Post', 2000);
+}
+
+// On load — check if urgent pipeline was already running
+checkUrgentStatus();
+
 // Auto-refresh every 60 seconds
 fetchData();
 loadFeedback();
@@ -1269,6 +1424,197 @@ def post_agent_command():
 def get_agent_commands_route():
     commands = get_agent_commands()
     return jsonify(commands[-10:])
+
+URGENT_STATUS_FILE = BASE / "plans/urgent-status.json"
+CLAUDE_EXE = "C:/Users/A/.local/bin/claude.exe"
+
+def get_urgent_status():
+    try:
+        return json.loads(URGENT_STATUS_FILE.read_text(encoding="utf-8"))
+    except:
+        return {"status": "idle", "last": None}
+
+def save_urgent_status(data):
+    URGENT_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    URGENT_STATUS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def run_urgent_pipeline(news_type, headline, details, submitted_by):
+    """Runs Atlas → Vector → Sigma pipeline for urgent company news in background thread."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    log = BASE / "reports/trend-monitor.log"
+
+    def log_it(msg):
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] 🚨 URGENT | {msg}\n")
+
+    save_urgent_status({"status": "running", "step": "Atlas assigning...", "started": ts, "last": None})
+    log_it("Urgent pipeline started")
+
+    # Save news brief
+    brief_path = BASE / "plans/urgent-news-brief.md"
+    brief_path.write_text(f"""---
+TYPE: {news_type}
+SOURCE: Company News (submitted by {submitted_by})
+HEADLINE: {headline}
+DETAILS: {details}
+SUBMITTED: {ts}
+PRIORITY: URGENT
+---
+""", encoding="utf-8")
+
+    # STEP 1: ATLAS — assign
+    atlas_prompt = f"""You are Atlas — Editor in Chief of avilonROBOTICS. Age 42, Gen X, Male.
+Calm, strategic, strict about quality.
+
+URGENT company news has been submitted and needs a Facebook post immediately.
+
+Read: D:/Claude Agent/company-profile.md
+Read: D:/Claude Agent/content-learning.md
+Read: D:/Claude Agent/content-types.md
+Read: D:/Claude Agent/plans/urgent-news-brief.md
+
+News type: {news_type}
+Headline: {headline}
+
+Your job: Write a content brief for Vector to write this post urgently.
+
+Save brief to: D:/Claude Agent/plans/current-brief.md
+
+Brief format:
+ASSIGN: Vector
+TYPE: {news_type}
+PLATFORM: Facebook
+TOPIC: {headline}
+KEY MESSAGE: [what the reader should feel/know based on this news]
+ANGLE: [how to present this news in avilonROBOTICS brand voice]
+TONE: [appropriate tone for {news_type}]
+DEADLINE: URGENT — post within 1 hour
+ASSIGNED BY: Atlas
+NEWS SOURCE: Company internal
+
+Output only: ASSIGNED: Vector"""
+
+    result1 = subprocess.run([CLAUDE_EXE, "--print", atlas_prompt], capture_output=True, text=True, timeout=120)
+    log_it(f"Atlas: {result1.stdout.strip()[:100]}")
+    save_urgent_status({"status": "running", "step": "Vector writing post...", "started": ts, "last": None})
+
+    # STEP 2: VECTOR — write post
+    vector_prompt = f"""You are Vector — Tech Writer for avilonROBOTICS. Age 35, Millennial, Male.
+Logical, precise, factual. You write professional content.
+
+Read: D:/Claude Agent/company-profile.md
+Read: D:/Claude Agent/content-learning.md
+Read: D:/Claude Agent/content-types.md
+Read: D:/Claude Agent/plans/current-brief.md
+Read: D:/Claude Agent/plans/urgent-news-brief.md
+
+Write an URGENT Facebook post for this company news.
+
+Post type: {news_type}
+Headline: {headline}
+Details: {details}
+
+Rules:
+- Thai language primary, English for tech terms
+- Voice: "ค่ะ" — น้องฟ้าใส persona
+- Tone matches {news_type}: {"สนุก, เชิญชวน" if news_type == "EVENT" else "ภาคภูมิใจ, เป็นทางการ" if news_type in ["PARTNERSHIP","SUCCESS"] else "Professional, warm"}
+- No fake facts — only what was provided
+- Hashtags: 8–20, mix Thai + English
+- Include 📞 098-948-9743
+
+Save to: D:/Claude Agent/drafts/urgent-draft.md
+
+Header:
+---
+TYPE: {news_type}
+WRITTEN BY: Vector
+ASSIGNED BY: Atlas
+STATUS: PENDING REVIEW
+GENERATED: {ts}
+DEADLINE: URGENT — 1 hour
+---
+
+Output only: DRAFT SAVED"""
+
+    result2 = subprocess.run([CLAUDE_EXE, "--print", vector_prompt], capture_output=True, text=True, timeout=180)
+    log_it(f"Vector: {result2.stdout.strip()[:100]}")
+    save_urgent_status({"status": "running", "step": "Sigma reviewing...", "started": ts, "last": None})
+
+    # STEP 3: SIGMA — review
+    sigma_prompt = """You are Sigma — Proofreader for avilonROBOTICS. Age 38, Millennial, Male.
+Strict, detail-oriented, perfectionist.
+
+Read: D:/Claude Agent/company-profile.md
+Read: D:/Claude Agent/content-learning.md
+Read: D:/Claude Agent/drafts/urgent-draft.md
+
+Run all 7 checks: spelling, factual accuracy, brand voice, emoji, hashtags, CTA, platform fit.
+
+If passes: update STATUS to → STATUS: APPROVED — Sigma ✅
+If fixed: update STATUS to → STATUS: APPROVED — Sigma ✅ (Fixed)
+If blocked: update STATUS to → STATUS: BLOCKED — Sigma 🚫
+
+Output one line only:
+VERDICT: APPROVED — Sigma
+VERDICT: APPROVED (FIXED) — Sigma
+VERDICT: BLOCKED — Sigma"""
+
+    result3 = subprocess.run([CLAUDE_EXE, "--print", sigma_prompt], capture_output=True, text=True, timeout=180)
+    verdict = result3.stdout.strip()
+    log_it(f"Sigma: {verdict[:100]}")
+
+    save_urgent_status({
+        "status": "done",
+        "step": verdict,
+        "started": ts,
+        "last": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "draft_path": "drafts/urgent-draft.md"
+    })
+    log_it("Urgent pipeline complete")
+
+def parse_urgent_draft():
+    content = read_file(BASE / "drafts/urgent-draft.md")
+    if not content:
+        return None
+    meta = {}
+    lines = content.splitlines()
+    for line in lines:
+        for key in ["TYPE", "WRITTEN BY", "ASSIGNED BY", "STATUS", "GENERATED", "DEADLINE"]:
+            if line.startswith(key + ":"):
+                meta[key.lower().replace(" ", "_")] = line.split(":", 1)[1].strip()
+    post_body = ""
+    in_post = False
+    for line in lines:
+        if line.startswith("---") and in_post:
+            break
+        if in_post:
+            post_body += line + "\n"
+        if line.startswith("---") and not in_post and meta:
+            in_post = True
+    meta["body"] = post_body.strip()
+    return meta
+
+@app.route("/api/urgent", methods=["POST"])
+def post_urgent():
+    data = request.get_json(force=True, silent=True) or {}
+    news_type = data.get("type", "NEWS").upper()
+    headline = data.get("headline", "").strip()
+    details = data.get("details", "").strip()
+    submitted_by = data.get("submitted_by", "Dashboard User").strip()
+    if not headline:
+        return jsonify({"ok": False, "error": "Headline is required"}), 400
+    status = get_urgent_status()
+    if status.get("status") == "running":
+        return jsonify({"ok": False, "error": "Pipeline already running"}), 409
+    thread = threading.Thread(target=run_urgent_pipeline, args=(news_type, headline, details, submitted_by), daemon=True)
+    thread.start()
+    return jsonify({"ok": True, "message": "Urgent pipeline started — Atlas → Vector → Sigma"})
+
+@app.route("/api/urgent/status", methods=["GET"])
+def get_urgent_status_route():
+    status = get_urgent_status()
+    draft = parse_urgent_draft() if status.get("status") == "done" else None
+    return jsonify({"pipeline": status, "draft": draft})
 
 if __name__ == "__main__":
     print("avilonROBOTICS Dashboard running at http://localhost:5050")
