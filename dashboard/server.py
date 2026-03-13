@@ -1,10 +1,12 @@
-from flask import Flask, jsonify, render_template_string, request
-import os, re, json, uuid, subprocess, threading
-from datetime import datetime
+from flask import Flask, jsonify, render_template_string, request, Response
+import os, re, json, uuid, subprocess, threading, time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 app = Flask(__name__)
 BASE = Path("D:/Claude Agent")
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def read_file(path):
     try:
@@ -65,7 +67,6 @@ def parse_draft():
             if line.startswith(key + ":"):
                 meta[key.lower().replace(" ", "_")] = line.split(":", 1)[1].strip()
 
-    # Extract post body (between ## FACEBOOK POST and ## METADATA)
     post_body = ""
     in_post = False
     for line in lines:
@@ -86,6 +87,95 @@ def parse_log():
         return []
     lines = [l.strip() for l in content.splitlines() if l.strip()]
     return lines[-20:]  # last 20 entries
+
+def parse_log_structured():
+    """Parse log lines into structured objects with agent attribution."""
+    content = read_file(BASE / "reports/trend-monitor.log")
+    if not content:
+        return []
+    agent_map = {
+        "dollar": "Dollar", "trend-monitor": "Dollar",
+        "atlas": "Atlas", "editor-in-chief": "Atlas",
+        "vector": "Vector", "tech-writer": "Vector",
+        "spark": "Spark", "ad-writer": "Spark",
+        "sigma": "Sigma", "proofreader": "Sigma",
+    }
+    entries = []
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    for line in lines[-50:]:
+        detected = "System"
+        lower = line.lower()
+        for key, name in agent_map.items():
+            if key in lower:
+                detected = name
+                break
+        # Extract timestamp if present [YYYY-MM-DD HH:MM] or similar
+        ts_match = re.match(r'\[([^\]]+)\]', line)
+        ts = ts_match.group(1) if ts_match else ""
+        entries.append({"agent": detected, "message": line, "ts": ts})
+    return entries
+
+def parse_agent_statuses():
+    """Reads trend-monitor.log, infers status per agent, returns list of agent status objects."""
+    content = read_file(BASE / "reports/trend-monitor.log")
+    agents = [
+        {"id": "dollar",  "name": "Dollar",  "icon": "📡", "role": "Trend Monitor",    "status": "idle", "task": "", "updated": ""},
+        {"id": "atlas",   "name": "Atlas",   "icon": "🎬", "role": "Editor in Chief",  "status": "idle", "task": "", "updated": ""},
+        {"id": "vector",  "name": "Vector",  "icon": "✍️", "role": "Tech Writer",       "status": "idle", "task": "", "updated": ""},
+        {"id": "spark",   "name": "Spark",   "icon": "📢", "role": "Ad Writer",         "status": "idle", "task": "", "updated": ""},
+        {"id": "sigma",   "name": "Sigma",   "icon": "✅", "role": "Proofreader",       "status": "idle", "task": "", "updated": ""},
+    ]
+    if not content:
+        return agents
+
+    now = datetime.now()
+    five_min_ago = now - timedelta(minutes=5)
+
+    # keyword maps: agent id → keywords found in log lines
+    agent_keywords = {
+        "dollar": ["dollar", "trend-monitor", "trending", "hashtag", "scan"],
+        "atlas":  ["atlas", "editor-in-chief", "brief", "assign", "editorial"],
+        "vector": ["vector", "tech-writer", "draft saved", "writing"],
+        "spark":  ["spark", "ad-writer", "hard sell", "soft sell"],
+        "sigma":  ["sigma", "proofreader", "verdict", "approved", "review"],
+    }
+    done_keywords = ["complete", "verdict", "approved", "done", "saved", "finished"]
+
+    for agent in agents:
+        relevant_lines = []
+        for line in content.splitlines():
+            low = line.lower()
+            for kw in agent_keywords[agent["id"]]:
+                if kw in low:
+                    relevant_lines.append(line)
+                    break
+
+        if not relevant_lines:
+            continue
+
+        last_line = relevant_lines[-1]
+        # Try to extract timestamp from line
+        ts_match = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]', last_line)
+        line_time = None
+        if ts_match:
+            try:
+                line_time = datetime.strptime(ts_match.group(1), "%Y-%m-%d %H:%M")
+            except:
+                pass
+
+        # Determine status
+        low_last = last_line.lower()
+        if any(k in low_last for k in done_keywords):
+            agent["status"] = "done"
+        elif line_time and line_time >= five_min_ago:
+            agent["status"] = "running"
+        else:
+            agent["status"] = "idle"
+
+        agent["task"] = last_line[:80] if len(last_line) > 80 else last_line
+        agent["updated"] = line_time.strftime("%H:%M") if line_time else ""
+
+    return agents
 
 def get_feedback():
     path = BASE / "drafts/feedback.json"
@@ -121,624 +211,762 @@ def save_agent_commands(commands):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(commands, ensure_ascii=False, indent=2), encoding="utf-8")
 
-DASHBOARD_HTML = """
-<!DOCTYPE html>
+def parse_post_history():
+    """Reads history/posts.json, returns last 20 posts."""
+    path = BASE / "history/posts.json"
+    try:
+        posts = json.loads(path.read_text(encoding="utf-8"))
+        return posts[-20:] if len(posts) > 20 else posts
+    except:
+        return []
+
+def save_post_history(post):
+    """Append a new post entry to history/posts.json."""
+    path = BASE / "history/posts.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        posts = json.loads(path.read_text(encoding="utf-8"))
+    except:
+        posts = []
+    posts.append(post)
+    path.write_text(json.dumps(posts, ensure_ascii=False, indent=2), encoding="utf-8")
+
+# ── SSE Stream Data Builder ───────────────────────────────────────────────────
+
+def build_stream_payload():
+    return {
+        "agents": parse_agent_statuses(),
+        "log": parse_log_structured(),
+        "hashtags": get_trending_hashtags(),
+        "draft": parse_draft(),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+# ── Dashboard HTML ────────────────────────────────────────────────────────────
+
+DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>avilonROBOTICS Content Team Dashboard</title>
+<title>avilonROBOTICS Content Control Room</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
+:root {
+  --bg: #0a0d14;
+  --surface: #111827;
+  --surface2: #1a2030;
+  --border: rgba(255,255,255,0.07);
+  --border-accent: rgba(0,212,255,0.3);
+  --text: #e2e8f0;
+  --text-muted: #64748b;
+  --accent: #00d4ff;
+  --green: #00ff88;
+  --yellow: #fbbf24;
+  --red: #ef4444;
+  --purple: #a78bfa;
+}
 
-  header {
-    background: linear-gradient(90deg, #1a1f2e, #0d1b2a);
-    border-bottom: 1px solid #00d4ff33;
-    padding: 16px 32px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  header h1 { font-size: 20px; color: #00d4ff; letter-spacing: 1px; }
-  header h1 span { color: #fff; }
-  .header-roster { font-size: 11px; color: #555; margin-top: 4px; letter-spacing: 0.5px; }
-  .live-badge {
-    background: #00ff8833;
-    border: 1px solid #00ff88;
-    color: #00ff88;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: bold;
-    animation: pulse 2s infinite;
-  }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    padding: 24px 32px;
-    max-width: 1600px;
-    margin: 0 auto;
-  }
-  .card {
-    background: #1a1f2e;
-    border: 1px solid #ffffff10;
-    border-radius: 12px;
-    padding: 20px;
-    position: relative;
-    overflow: hidden;
-  }
-  .card.full { grid-column: 1 / -1; }
-  .card.half { grid-column: span 2; }
-  .card-title {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: #888;
-    margin-bottom: 16px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .card-title .dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: #00d4ff;
-  }
+/* ── Header ── */
+.site-header {
+  background: linear-gradient(90deg, #111827, #0d1b2a);
+  border-bottom: 1px solid var(--border-accent);
+  padding: 14px 32px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+}
+.header-brand { display: flex; flex-direction: column; gap: 2px; }
+.header-logo { font-size: 18px; font-weight: 800; color: var(--accent); letter-spacing: 1px; }
+.header-logo span { color: var(--text); }
+.header-subtitle { font-size: 11px; color: var(--text-muted); letter-spacing: 1px; text-transform: uppercase; }
+.header-roster { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.roster-pill {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.header-right { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
+.conn-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  transition: all 0.3s;
+}
+.conn-dot.disconnected { background: var(--red); box-shadow: 0 0 8px var(--red); }
+.header-clock { font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
-  /* Pipeline */
-  .pipeline {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    justify-content: space-between;
-  }
-  .step {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-  }
-  .step-icon {
-    width: 52px; height: 52px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 20px;
-    border: 2px solid #ffffff15;
-    background: #0f1117;
-    position: relative;
-    z-index: 1;
-  }
-  .step-icon.done { border-color: #00ff88; background: #00ff8815; }
-  .step-icon.active { border-color: #00d4ff; background: #00d4ff15; animation: pulse 1.5s infinite; }
-  .step-icon.idle { border-color: #333; }
-  .step-label { font-size: 11px; color: #888; text-align: center; }
-  .step-label strong { display: block; font-size: 12px; color: #ccc; }
-  .arrow { color: #333; font-size: 20px; margin: 0 -4px; }
+/* ── Main layout ── */
+.main-wrap {
+  max-width: 1700px;
+  margin: 0 auto;
+  padding: 20px 24px;
+  display: grid;
+  gap: 16px;
+}
 
-  /* Trend cards */
-  .trend-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 700;
-    margin-bottom: 12px;
-  }
-  .hot { background: #ff333322; border: 1px solid #ff3333; color: #ff6666; }
-  .rising { background: #ffaa0022; border: 1px solid #ffaa00; color: #ffcc44; }
-  .watch { background: #8888ff22; border: 1px solid #8888ff; color: #aaaaff; }
-  .approved { background: #00ff8822; border: 1px solid #00ff88; color: #00ff88; }
-  .pending { background: #ffaa0022; border: 1px solid #ffaa00; color: #ffcc44; }
+/* ── Card base ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+.card-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.title-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.title-dot.green { background: var(--green); }
+.title-dot.red { background: var(--red); animation: dot-pulse 0.8s infinite; }
+.title-dot.yellow { background: var(--yellow); }
+.title-dot.purple { background: var(--purple); }
+.title-live {
+  background: rgba(0,255,136,0.15);
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  animation: dot-pulse 2s infinite;
+}
 
-  .trend-item {
-    background: #0f1117;
-    border: 1px solid #ffffff08;
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 8px;
-  }
-  .trend-item h4 { font-size: 14px; color: #fff; margin-bottom: 4px; }
-  .trend-item p { font-size: 12px; color: #888; line-height: 1.5; }
-  .trend-item .angle { color: #00d4ff; font-size: 12px; margin-top: 4px; }
-  .empty { color: #555; font-size: 13px; text-align: center; padding: 20px 0; }
+@keyframes dot-pulse { 0%,100%{opacity:1} 50%{opacity:0.45} }
+@keyframes spin-pulse { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
 
-  /* Draft */
-  .draft-post {
-    background: #0f1117;
-    border: 1px solid #ffffff08;
-    border-radius: 8px;
-    padding: 16px;
-    font-size: 13px;
-    line-height: 1.8;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    max-height: 320px;
-    overflow-y: auto;
-    color: #ccc;
-  }
-  .draft-meta {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-bottom: 12px;
-  }
-  .meta-pill {
-    background: #ffffff0a;
-    border: 1px solid #ffffff15;
-    border-radius: 6px;
-    padding: 3px 10px;
-    font-size: 11px;
-    color: #aaa;
-  }
-  .meta-pill strong { color: #fff; }
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a3348; border-radius: 2px; }
 
-  /* Log */
-  .log-list { max-height: 200px; overflow-y: auto; }
-  .log-item {
-    font-size: 12px;
-    color: #666;
-    padding: 4px 0;
-    border-bottom: 1px solid #ffffff05;
-    font-family: monospace;
-  }
-  .log-item:last-child { color: #aaa; }
+/* ── Agent Grid ── */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 16px;
+}
+@media (max-width: 1100px) { .agent-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 700px)  { .agent-grid { grid-template-columns: repeat(2, 1fr); } }
 
-  /* Weekly calendar */
-  .calendar {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-  }
-  .cal-day {
-    background: #0f1117;
-    border: 1px solid #ffffff08;
-    border-radius: 8px;
-    padding: 12px;
-  }
-  .cal-day .day-name { font-size: 11px; color: #666; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px; }
-  .cal-day .type-name { font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 4px; }
-  .cal-day .type-desc { font-size: 11px; color: #888; }
-  .cal-day.today { border-color: #00d4ff44; background: #00d4ff08; }
+.agent-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.agent-card.status-running {
+  border-color: rgba(0,255,136,0.4);
+  box-shadow: 0 0 16px rgba(0,255,136,0.08);
+}
+.agent-card.status-done {
+  border-color: rgba(0,212,255,0.3);
+}
+.agent-card.status-error {
+  border-color: rgba(239,68,68,0.4);
+}
+.agent-icon { font-size: 36px; line-height: 1; }
+.agent-name { font-size: 16px; font-weight: 700; color: var(--text); }
+.agent-role { font-size: 11px; color: var(--text-muted); }
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  width: fit-content;
+}
+.badge-idle    { background: rgba(100,116,139,0.15); border: 1px solid rgba(100,116,139,0.4); color: var(--text-muted); }
+.badge-running { background: rgba(0,255,136,0.12); border: 1px solid rgba(0,255,136,0.5); color: var(--green); }
+.badge-thinking{ background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.5); color: var(--yellow); }
+.badge-done    { background: rgba(0,212,255,0.12); border: 1px solid rgba(0,212,255,0.5); color: var(--accent); }
+.badge-error   { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.5); color: var(--red); }
+.badge-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.badge-running .badge-dot, .badge-thinking .badge-dot { animation: dot-pulse 1s infinite; }
 
-  /* Stats row */
-  .stats { display: flex; gap: 16px; }
-  .stat { flex: 1; background: #0f1117; border-radius: 8px; padding: 14px; border: 1px solid #ffffff08; }
-  .stat-num { font-size: 28px; font-weight: 700; color: #00d4ff; }
-  .stat-label { font-size: 11px; color: #666; margin-top: 2px; }
+.agent-task {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-height: 32px;
+}
+.agent-updated { font-size: 10px; color: #374151; }
 
-  .refresh-time { font-size: 11px; color: #444; text-align: right; margin-top: 8px; }
+/* ── Log + Draft pair ── */
+.log-draft-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 900px) { .log-draft-row { grid-template-columns: 1fr; } }
 
-  /* Scrollbar */
-  ::-webkit-scrollbar { width: 4px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+/* ── Log Panel ── */
+.log-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.log-filter-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 3px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 600;
+}
+.log-filter-btn:hover { border-color: var(--border-accent); color: var(--text); }
+.log-filter-btn.active { background: rgba(0,212,255,0.12); border-color: var(--accent); color: var(--accent); }
 
-  .copy-btn {
-    background: #00d4ff22;
-    border: 1px solid #00d4ff55;
-    color: #00d4ff;
-    padding: 6px 14px;
-    border-radius: 6px;
-    font-size: 12px;
-    cursor: pointer;
-    margin-top: 10px;
-    transition: all 0.2s;
-  }
-  .copy-btn:hover { background: #00d4ff33; }
+.log-list {
+  height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.log-entry {
+  display: flex;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  line-height: 1.5;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+.log-entry:hover { background: rgba(255,255,255,0.04); }
+.log-ts { color: #374151; flex-shrink: 0; }
+.log-agent-tag {
+  font-weight: 700;
+  flex-shrink: 0;
+  min-width: 52px;
+}
+.log-agent-tag.Dollar  { color: #00d4ff; }
+.log-agent-tag.Atlas   { color: #a78bfa; }
+.log-agent-tag.Vector  { color: #00ff88; }
+.log-agent-tag.Spark   { color: #fbbf24; }
+.log-agent-tag.Sigma   { color: #f472b6; }
+.log-agent-tag.System  { color: var(--text-muted); }
+.log-msg { flex: 1; color: #94a3b8; }
+.log-empty { color: var(--text-muted); font-size: 12px; padding: 20px; text-align: center; }
 
-  /* Feedback */
-  .feedback-list { max-height: 260px; overflow-y: auto; margin-bottom: 14px; }
-  .feedback-item {
-    background: #0f1117;
-    border: 1px solid #ffffff08;
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 8px;
-  }
-  .feedback-item .fb-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
-  }
-  .fb-author { font-size: 12px; font-weight: 700; color: #00d4ff; }
-  .fb-time { font-size: 11px; color: #555; }
-  .fb-text { font-size: 13px; color: #ccc; line-height: 1.6; }
-  .fb-verdict {
-    display: inline-block;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 10px;
-    margin-top: 6px;
-  }
-  .fb-verdict.approve { background: #00ff8822; border: 1px solid #00ff88; color: #00ff88; }
-  .fb-verdict.revise { background: #ff333322; border: 1px solid #ff3333; color: #ff6666; }
-  .fb-verdict.comment { background: #ffffff11; border: 1px solid #ffffff22; color: #888; }
+/* ── Draft Panel ── */
+.draft-status-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+.draft-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700;
+}
+.draft-approved { background: rgba(0,255,136,0.12); border: 1px solid rgba(0,255,136,0.5); color: var(--green); }
+.draft-pending  { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.5); color: var(--yellow); }
+.draft-blocked  { background: rgba(239,68,68,0.12);  border: 1px solid rgba(239,68,68,0.5);  color: var(--red); }
+.meta-pill {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.meta-pill strong { color: var(--text); }
+.draft-body {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  height: 220px;
+  overflow-y: auto;
+  color: #cbd5e1;
+}
+.draft-actions { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+.copy-btn {
+  background: rgba(0,212,255,0.1);
+  border: 1px solid rgba(0,212,255,0.35);
+  color: var(--accent);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 600;
+}
+.copy-btn:hover { background: rgba(0,212,255,0.2); }
+.deadline-badge {
+  background: rgba(239,68,68,0.1);
+  border: 1px solid rgba(239,68,68,0.4);
+  color: var(--red);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.draft-empty { color: var(--text-muted); font-size: 13px; padding: 40px 0; text-align: center; }
 
-  .feedback-form { display: flex; flex-direction: column; gap: 10px; }
-  .feedback-form input, .feedback-form textarea, .feedback-form select {
-    background: #0f1117;
-    border: 1px solid #ffffff15;
-    border-radius: 8px;
-    padding: 10px 12px;
-    color: #e0e0e0;
-    font-size: 13px;
-    font-family: 'Segoe UI', sans-serif;
-    outline: none;
-    transition: border 0.2s;
-  }
-  .feedback-form input:focus, .feedback-form textarea:focus, .feedback-form select:focus {
-    border-color: #00d4ff55;
-  }
-  .feedback-form textarea { resize: vertical; min-height: 80px; }
-  .feedback-form select option { background: #1a1f2e; }
-  .fb-row { display: flex; gap: 10px; }
-  .fb-row input { flex: 1; }
-  .fb-row select { flex: 0 0 140px; }
-  .submit-btn {
-    background: linear-gradient(90deg, #00d4ff22, #00ff8822);
-    border: 1px solid #00d4ff55;
-    color: #00d4ff;
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s;
-    align-self: flex-end;
-  }
-  .submit-btn:hover { background: linear-gradient(90deg, #00d4ff33, #00ff8833); }
-  .clear-btn {
-    background: transparent;
-    border: 1px solid #ff333344;
-    color: #ff6666;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 11px;
-    cursor: pointer;
-    margin-left: 8px;
-  }
+/* ── Trend Row ── */
+.trend-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+@media (max-width: 900px) { .trend-row { grid-template-columns: 1fr; } }
 
-  /* Hashtag feed */
-  .hashtag-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 5px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: default;
-    transition: transform 0.1s;
-  }
-  .hashtag-pill:hover { transform: scale(1.05); }
-  .hashtag-pill.hot { background: #ff333322; border: 1px solid #ff3333; color: #ff6666; }
-  .hashtag-pill.rising { background: #ffaa0022; border: 1px solid #ffaa00; color: #ffcc44; }
-  .hashtag-pill.watch { background: #8888ff22; border: 1px solid #8888ff; color: #aaaaff; }
-  .hashtag-pill .pill-platform { font-size: 9px; color: #666; font-weight: normal; }
+.trend-level-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700;
+  margin-bottom: 14px;
+}
+.level-hot    { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.5); color: #f87171; }
+.level-rising { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.5); color: var(--yellow); }
+.level-watch  { background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.5); color: var(--purple); }
 
-  /* ── Agent Command Center ── */
-  .acc-tabs {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-bottom: 20px;
-  }
-  .acc-tab {
-    background: #0f1117;
-    border: 1px solid #ffffff15;
-    color: #888;
-    padding: 7px 18px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-    letter-spacing: 0.5px;
-  }
-  .acc-tab:hover { border-color: #00d4ff55; color: #ccc; }
-  .acc-tab.active {
-    background: #00d4ff18;
-    border-color: #00d4ff;
-    color: #00d4ff;
-  }
+.trend-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+.trend-item:last-child { margin-bottom: 0; }
+.trend-item h4 { font-size: 13px; color: var(--text); margin-bottom: 4px; font-weight: 700; }
+.trend-item p  { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.trend-item .angle { color: var(--accent); font-size: 11px; margin-top: 4px; }
+.trend-item .action { color: #374151; font-size: 10px; margin-top: 4px; }
 
-  .acc-panel { display: none; }
-  .acc-panel.active { display: block; }
+/* ── Hashtag Feed ── */
+.hashtag-wrap { display: flex; flex-wrap: wrap; gap: 8px; min-height: 48px; }
+.hashtag-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  cursor: default; transition: transform 0.15s;
+}
+.hashtag-pill:hover { transform: scale(1.05); }
+.hashtag-pill.hot     { background: rgba(239,68,68,0.12);   border: 1px solid rgba(239,68,68,0.5);   color: #f87171; }
+.hashtag-pill.rising  { background: rgba(251,191,36,0.12);  border: 1px solid rgba(251,191,36,0.5);  color: var(--yellow); }
+.hashtag-pill.watch   { background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.5); color: var(--purple); }
+.hashtag-pill .pill-platform { font-size: 9px; color: var(--text-muted); font-weight: normal; }
+.hash-scan-time { font-size: 10px; color: #374151; font-weight: normal; }
 
-  .acc-agent-header {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    margin-bottom: 16px;
-  }
-  .acc-agent-icon {
-    width: 48px; height: 48px;
-    border-radius: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 22px;
-    background: #00d4ff12;
-    border: 1px solid #00d4ff33;
-    flex-shrink: 0;
-  }
-  .acc-agent-name { font-size: 15px; font-weight: 700; color: #fff; }
-  .acc-agent-role { font-size: 12px; color: #666; margin-top: 2px; }
+/* ── Urgent Box ── */
+.urgent-card {
+  background: linear-gradient(135deg, var(--surface), #1a1020);
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: 12px;
+  padding: 20px;
+}
+.urgent-card .card-title .title-dot { animation: dot-pulse 0.8s infinite; }
+.urgent-inner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+@media (max-width: 900px) { .urgent-inner { grid-template-columns: 1fr; } }
+.urgent-form-col, .urgent-output-col { display: flex; flex-direction: column; gap: 10px; }
+.field-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;
+}
+.urgent-input, .urgent-select, .urgent-textarea {
+  background: var(--bg);
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'Segoe UI', sans-serif;
+  outline: none;
+  width: 100%;
+  transition: border-color 0.2s;
+}
+.urgent-input:focus, .urgent-select:focus, .urgent-textarea:focus { border-color: rgba(239,68,68,0.7); }
+.urgent-textarea { resize: vertical; min-height: 80px; }
+.urgent-select option { background: var(--surface); }
+.urgent-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.urgent-push-btn {
+  background: linear-gradient(90deg, rgba(239,68,68,0.15), rgba(239,68,68,0.08));
+  border: 1px solid rgba(239,68,68,0.6);
+  color: #f87171;
+  padding: 11px 22px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  align-self: flex-start;
+}
+.urgent-push-btn:hover { background: linear-gradient(90deg, rgba(239,68,68,0.25), rgba(239,68,68,0.15)); }
+.urgent-push-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.urgent-confirm { font-size: 12px; color: var(--green); font-weight: 700; display: none; }
+.urgent-pipeline-steps { display: flex; gap: 8px; flex-wrap: wrap; }
+.pipeline-step-badge {
+  font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px;
+}
+.ps-done    { background: rgba(0,255,136,0.12); border: 1px solid rgba(0,255,136,0.5); color: var(--green); }
+.ps-active  { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.5); color: var(--yellow); }
+.ps-idle    { background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--text-muted); }
+.urgent-draft-output {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 140px;
+  max-height: 280px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.urgent-copy-btn {
+  display: none;
+  background: rgba(0,212,255,0.1);
+  border: 1px solid rgba(0,212,255,0.35);
+  color: var(--accent);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
 
-  .acc-body {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-  }
-  @media (max-width: 900px) { .acc-body { grid-template-columns: 1fr; } }
+/* ── Feedback Box ── */
+.feedback-list { max-height: 260px; overflow-y: auto; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+.feedback-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.fb-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.fb-author { font-size: 12px; font-weight: 700; color: var(--accent); }
+.fb-time   { font-size: 11px; color: var(--text-muted); }
+.fb-text   { font-size: 13px; color: #cbd5e1; line-height: 1.6; }
+.fb-verdict {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  padding: 2px 8px; border-radius: 10px; margin-top: 6px;
+}
+.fb-verdict.approve { background: rgba(0,255,136,0.12); border: 1px solid rgba(0,255,136,0.5); color: var(--green); }
+.fb-verdict.revise  { background: rgba(239,68,68,0.12);  border: 1px solid rgba(239,68,68,0.5);  color: var(--red); }
+.fb-verdict.comment { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text-muted); }
+.fb-empty { color: var(--text-muted); font-size: 12px; padding: 20px; text-align: center; }
+.feedback-form { display: flex; flex-direction: column; gap: 10px; }
+.feedback-form input,
+.feedback-form textarea,
+.feedback-form select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'Segoe UI', sans-serif;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.feedback-form input:focus,
+.feedback-form textarea:focus,
+.feedback-form select:focus { border-color: var(--border-accent); }
+.feedback-form textarea { resize: vertical; min-height: 80px; }
+.feedback-form select option { background: var(--surface); }
+.fb-form-row { display: flex; gap: 10px; }
+.fb-form-row input { flex: 1; }
+.fb-form-row select { flex: 0 0 160px; }
+.fb-form-actions { display: flex; align-items: center; gap: 10px; }
+.submit-btn {
+  background: linear-gradient(90deg, rgba(0,212,255,0.12), rgba(0,255,136,0.12));
+  border: 1px solid rgba(0,212,255,0.4);
+  color: var(--accent);
+  padding: 9px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.submit-btn:hover { background: linear-gradient(90deg, rgba(0,212,255,0.2), rgba(0,255,136,0.2)); }
+.clear-btn {
+  background: transparent;
+  border: 1px solid rgba(239,68,68,0.3);
+  color: var(--red);
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.fb-subtitle { font-size: 11px; color: var(--text-muted); margin-bottom: 14px; margin-top: -8px; }
+.feedback-count { font-size: 11px; color: var(--text-muted); font-weight: normal; }
 
-  .acc-input-col, .acc-output-col { display: flex; flex-direction: column; gap: 10px; }
-
-  .acc-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: #555;
-    margin-bottom: 2px;
-  }
-
-  .acc-textarea {
-    background: #0f1117;
-    border: 1px solid #ffffff15;
-    border-radius: 8px;
-    padding: 12px;
-    color: #e0e0e0;
-    font-size: 13px;
-    font-family: 'Segoe UI', sans-serif;
-    outline: none;
-    resize: vertical;
-    min-height: 90px;
-    transition: border 0.2s;
-    width: 100%;
-  }
-  .acc-textarea:focus { border-color: #00d4ff55; }
-
-  .acc-send-btn {
-    background: linear-gradient(90deg, #00d4ff22, #00ff8822);
-    border: 1px solid #00d4ff66;
-    color: #00d4ff;
-    padding: 10px 22px;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s;
-    align-self: flex-start;
-  }
-  .acc-send-btn:hover { background: linear-gradient(90deg, #00d4ff33, #00ff8833); border-color: #00d4ff99; }
-  .acc-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .acc-confirm {
-    font-size: 12px;
-    color: #00ff88;
-    font-weight: 700;
-    display: none;
-    margin-top: 2px;
-  }
-
-  .acc-suggestions { display: flex; flex-direction: column; gap: 6px; }
-  .acc-suggestion-btn {
-    background: #0f1117;
-    border: 1px solid #ffffff10;
-    color: #aaa;
-    padding: 8px 12px;
-    border-radius: 8px;
-    font-size: 12px;
-    cursor: pointer;
-    text-align: left;
-    transition: all 0.2s;
-  }
-  .acc-suggestion-btn:hover { border-color: #00d4ff44; color: #e0e0e0; background: #00d4ff08; }
-
-  .acc-response-area {
-    background: #0f1117;
-    border: 1px solid #ffffff08;
-    border-radius: 8px;
-    padding: 12px;
-    min-height: 120px;
-    max-height: 260px;
-    overflow-y: auto;
-    font-size: 12px;
-    color: #888;
-    font-family: monospace;
-    line-height: 1.6;
-  }
-
-  .acc-cmd-item {
-    padding: 6px 0;
-    border-bottom: 1px solid #ffffff06;
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-  }
-  .acc-cmd-item:last-child { border-bottom: none; }
-  .acc-cmd-agent {
-    font-size: 10px;
-    font-weight: 700;
-    color: #00d4ff;
-    white-space: nowrap;
-    flex-shrink: 0;
-    min-width: 90px;
-  }
-  .acc-cmd-text { flex: 1; color: #ccc; font-size: 12px; }
-  .acc-cmd-time { font-size: 10px; color: #444; white-space: nowrap; flex-shrink: 0; }
-  .acc-cmd-status {
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 10px;
-    flex-shrink: 0;
-  }
-  .acc-cmd-status.pending { background: #ffaa0022; border: 1px solid #ffaa00; color: #ffcc44; }
-  .acc-cmd-status.done    { background: #00ff8822; border: 1px solid #00ff88; color: #00ff88; }
-  .acc-cmd-status.error   { background: #ff333322; border: 1px solid #ff3333; color: #ff6666; }
+/* ── Agent Command Center ── */
+.acc-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+.acc-tab {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 7px 18px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  letter-spacing: 0.5px;
+}
+.acc-tab:hover { border-color: var(--border-accent); color: var(--text); }
+.acc-tab.active { background: rgba(0,212,255,0.1); border-color: var(--accent); color: var(--accent); }
+.acc-panel { display: none; }
+.acc-panel.active { display: block; }
+.acc-agent-header { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.acc-agent-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; background: rgba(0,212,255,0.07);
+  border: 1px solid rgba(0,212,255,0.2); flex-shrink: 0;
+}
+.acc-agent-name { font-size: 15px; font-weight: 700; color: var(--text); }
+.acc-agent-role { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.acc-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .acc-body { grid-template-columns: 1fr; } }
+.acc-input-col, .acc-output-col { display: flex; flex-direction: column; gap: 10px; }
+.acc-label { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px; }
+.acc-textarea {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; color: var(--text); font-size: 13px; font-family: 'Segoe UI', sans-serif;
+  outline: none; resize: vertical; min-height: 90px; transition: border-color 0.2s; width: 100%;
+}
+.acc-textarea:focus { border-color: var(--border-accent); }
+.acc-send-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.acc-send-btn {
+  background: linear-gradient(90deg, rgba(0,212,255,0.12), rgba(0,255,136,0.12));
+  border: 1px solid rgba(0,212,255,0.4);
+  color: var(--accent); padding: 9px 20px; border-radius: 8px; font-size: 13px;
+  font-weight: 700; cursor: pointer; transition: all 0.2s;
+}
+.acc-send-btn:hover { background: linear-gradient(90deg, rgba(0,212,255,0.2), rgba(0,255,136,0.2)); }
+.acc-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.acc-confirm { font-size: 12px; color: var(--green); font-weight: 700; display: none; }
+.acc-suggestions { display: flex; flex-direction: column; gap: 6px; }
+.acc-suggestion-btn {
+  background: var(--bg); border: 1px solid var(--border); color: #94a3b8;
+  padding: 8px 12px; border-radius: 8px; font-size: 12px; cursor: pointer;
+  text-align: left; transition: all 0.2s;
+}
+.acc-suggestion-btn:hover { border-color: rgba(0,212,255,0.3); color: var(--text); background: rgba(0,212,255,0.04); }
+.acc-response-area {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; min-height: 120px; max-height: 260px; overflow-y: auto;
+  font-size: 12px; color: var(--text-muted); font-family: 'Consolas', monospace; line-height: 1.6;
+}
+.acc-cmd-history-wrap { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
+.acc-cmd-list { max-height: 200px; overflow-y: auto; }
+.acc-cmd-item {
+  padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.acc-cmd-item:last-child { border-bottom: none; }
+.acc-cmd-agent { font-size: 10px; font-weight: 700; color: var(--accent); white-space: nowrap; flex-shrink: 0; min-width: 90px; }
+.acc-cmd-text  { flex: 1; color: #cbd5e1; font-size: 12px; }
+.acc-cmd-time  { font-size: 10px; color: #374151; white-space: nowrap; flex-shrink: 0; }
+.acc-cmd-status { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; }
+.acc-cmd-status.pending { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.5); color: var(--yellow); }
+.acc-cmd-status.done    { background: rgba(0,255,136,0.12);  border: 1px solid rgba(0,255,136,0.5);  color: var(--green); }
+.acc-cmd-status.error   { background: rgba(239,68,68,0.12);  border: 1px solid rgba(239,68,68,0.5);  color: var(--red); }
+.acc-history-ts { font-size: 10px; color: #374151; font-weight: normal; margin-left: 6px; }
+.empty-state { color: var(--text-muted); font-size: 12px; padding: 20px; text-align: center; }
 </style>
 </head>
 <body>
 
-<header>
-  <div>
-    <h1>avilon<span>ROBOTICS</span> — Content Team Dashboard</h1>
-    <div class="header-roster">Dollar · Atlas · Vector · Spark · Sigma</div>
+<!-- ════════════════════ HEADER ════════════════════ -->
+<header class="site-header">
+  <div class="header-brand">
+    <div class="header-logo">avilon<span>ROBOTICS</span></div>
+    <div class="header-subtitle">Content Control Room</div>
   </div>
-  <div style="display:flex;align-items:center;gap:16px">
-    <span id="clock" style="font-size:13px;color:#666"></span>
-    <div class="live-badge">● LIVE</div>
+  <div class="header-roster">
+    <span class="roster-pill">📡 Dollar</span>
+    <span class="roster-pill">🎬 Atlas</span>
+    <span class="roster-pill">✍️ Vector</span>
+    <span class="roster-pill">📢 Spark</span>
+    <span class="roster-pill">✅ Sigma</span>
+  </div>
+  <div class="header-right">
+    <span class="header-clock" id="clock"></span>
+    <div class="conn-dot" id="conn-dot" title="SSE Connected"></div>
   </div>
 </header>
 
-<div class="grid">
+<div class="main-wrap">
 
-  <!-- Pipeline Status -->
-  <div class="card full">
-    <div class="card-title"><div class="dot"></div>Pipeline Status</div>
-    <div class="pipeline" id="pipeline">
-      <div class="step">
-        <div class="step-icon" id="s1">📡</div>
-        <div class="step-label"><strong>Dollar</strong>Trend Monitor</div>
-      </div>
-      <div class="arrow">→</div>
-      <div class="step">
-        <div class="step-icon" id="s2">🎬</div>
-        <div class="step-label"><strong>Atlas</strong>Editor in Chief</div>
-      </div>
-      <div class="arrow">→</div>
-      <div class="step">
-        <div class="step-icon" id="s3">✍️</div>
-        <div class="step-label"><strong>Vector</strong>Tech Writer</div>
-      </div>
-      <div class="arrow">→</div>
-      <div class="step">
-        <div class="step-icon" id="s4">📢</div>
-        <div class="step-label"><strong>Spark</strong>Ad Writer</div>
-      </div>
-      <div class="arrow">→</div>
-      <div class="step">
-        <div class="step-icon" id="s5">✅</div>
-        <div class="step-label"><strong>Sigma</strong>Proofreader</div>
-      </div>
-      <div class="arrow">→</div>
-      <div class="step">
-        <div class="step-icon" id="s6">🚀</div>
-        <div class="step-label"><strong>Ready to Post</strong>Facebook</div>
-      </div>
+  <!-- ════════════════════ AGENT GRID ════════════════════ -->
+  <div class="agent-grid" id="agent-grid">
+    <!-- populated by SSE -->
+    <div class="agent-card" id="agent-dollar">
+      <div class="agent-icon">📡</div>
+      <div class="agent-name">Dollar</div>
+      <div class="agent-role">Trend Monitor</div>
+      <div class="agent-badge badge-idle"><span class="badge-dot"></span>idle</div>
+      <div class="agent-task">—</div>
+      <div class="agent-updated"></div>
+    </div>
+    <div class="agent-card" id="agent-atlas">
+      <div class="agent-icon">🎬</div>
+      <div class="agent-name">Atlas</div>
+      <div class="agent-role">Editor in Chief</div>
+      <div class="agent-badge badge-idle"><span class="badge-dot"></span>idle</div>
+      <div class="agent-task">—</div>
+      <div class="agent-updated"></div>
+    </div>
+    <div class="agent-card" id="agent-vector">
+      <div class="agent-icon">✍️</div>
+      <div class="agent-name">Vector</div>
+      <div class="agent-role">Tech Writer</div>
+      <div class="agent-badge badge-idle"><span class="badge-dot"></span>idle</div>
+      <div class="agent-task">—</div>
+      <div class="agent-updated"></div>
+    </div>
+    <div class="agent-card" id="agent-spark">
+      <div class="agent-icon">📢</div>
+      <div class="agent-name">Spark</div>
+      <div class="agent-role">Ad Writer</div>
+      <div class="agent-badge badge-idle"><span class="badge-dot"></span>idle</div>
+      <div class="agent-task">—</div>
+      <div class="agent-updated"></div>
+    </div>
+    <div class="agent-card" id="agent-sigma">
+      <div class="agent-icon">✅</div>
+      <div class="agent-name">Sigma</div>
+      <div class="agent-role">Proofreader</div>
+      <div class="agent-badge badge-idle"><span class="badge-dot"></span>idle</div>
+      <div class="agent-task">—</div>
+      <div class="agent-updated"></div>
     </div>
   </div>
 
-  <!-- Stats -->
+  <!-- ════════════════════ LOG | DRAFT ════════════════════ -->
+  <div class="log-draft-row">
+
+    <!-- Log Panel -->
+    <div class="card">
+      <div class="card-title">
+        <div class="title-dot"></div>
+        Activity Log
+        <span class="title-live" id="log-live-badge">● LIVE</span>
+      </div>
+      <div class="log-filters">
+        <button class="log-filter-btn active" onclick="setLogFilter('All', this)">All</button>
+        <button class="log-filter-btn" onclick="setLogFilter('Dollar', this)">Dollar</button>
+        <button class="log-filter-btn" onclick="setLogFilter('Atlas', this)">Atlas</button>
+        <button class="log-filter-btn" onclick="setLogFilter('Vector', this)">Vector</button>
+        <button class="log-filter-btn" onclick="setLogFilter('Spark', this)">Spark</button>
+        <button class="log-filter-btn" onclick="setLogFilter('Sigma', this)">Sigma</button>
+      </div>
+      <div class="log-list" id="log-list">
+        <div class="log-empty">Waiting for agent activity...</div>
+      </div>
+    </div>
+
+    <!-- Draft Panel -->
+    <div class="card">
+      <div class="card-title">
+        <div class="title-dot green"></div>
+        Latest Draft
+      </div>
+      <div id="draft-section">
+        <div class="draft-empty">No draft available — waiting for HOT trend</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ════════════════════ TREND ROW ════════════════════ -->
+  <div class="trend-row">
+    <div class="card">
+      <div class="card-title"><div class="title-dot red"></div>HOT Trends</div>
+      <div class="trend-level-badge level-hot">🔴 HOT</div>
+      <div id="hot-trends"><div class="empty-state">No HOT trends right now</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><div class="title-dot yellow"></div>Rising Trends</div>
+      <div class="trend-level-badge level-rising">🟡 RISING</div>
+      <div id="rising-trends"><div class="empty-state">No RISING trends right now</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><div class="title-dot purple"></div>Watch List</div>
+      <div class="trend-level-badge level-watch">👁 WATCH</div>
+      <div id="watch-trends"><div class="empty-state">No trends to watch</div></div>
+    </div>
+  </div>
+
+  <!-- ════════════════════ HASHTAG FEED ════════════════════ -->
   <div class="card">
-    <div class="card-title"><div class="dot" style="background:#00ff88"></div>This Week</div>
-    <div class="stats">
-      <div class="stat"><div class="stat-num" id="stat-hot">–</div><div class="stat-label">HOT Trends</div></div>
-      <div class="stat"><div class="stat-num" id="stat-rising">–</div><div class="stat-label">RISING</div></div>
-      <div class="stat"><div class="stat-num" id="stat-drafts">–</div><div class="stat-label">Drafts Ready</div></div>
-    </div>
-  </div>
-
-  <!-- Live Hashtag Feed -->
-  <div class="card half">
     <div class="card-title">
-      <div class="dot" style="background:#ff3333;animation:pulse 1s infinite"></div>
-      🏷️ Trending Hashtags — Live Feed
-      <span id="hashtag-scan-time" style="font-size:10px;color:#444;font-weight:normal;margin-left:8px"></span>
+      <div class="title-dot red"></div>
+      Trending Hashtags — Live Feed
+      <span class="hash-scan-time" id="hashtag-scan-time"></span>
     </div>
-    <div id="hashtag-feed" style="display:flex;flex-wrap:wrap;gap:8px;min-height:60px">
-      <div class="empty">Waiting for Dollar's next scan...</div>
-    </div>
-  </div>
-
-  <!-- Weekly Calendar -->
-  <div class="card half">
-    <div class="card-title"><div class="dot" style="background:#ffaa00"></div>Weekly Schedule</div>
-    <div class="calendar">
-      <div class="cal-day" id="cal-mon">
-        <div class="day-name">Monday</div>
-        <div class="type-name">KNOWLEDGE</div>
-        <div class="type-desc">Tech article</div>
-      </div>
-      <div class="cal-day" id="cal-wed">
-        <div class="day-name">Wednesday</div>
-        <div class="type-name">SOFT SELL</div>
-        <div class="type-desc">Pain point story</div>
-      </div>
-      <div class="cal-day" id="cal-fri">
-        <div class="day-name">Friday</div>
-        <div class="type-name">TRENDJACKING</div>
-        <div class="type-desc">Ride trending topic</div>
-      </div>
-      <div class="cal-day" id="cal-sun">
-        <div class="day-name">Sunday</div>
-        <div class="type-name">HARD SELL</div>
-        <div class="type-desc">Demo CTA</div>
-      </div>
+    <div class="hashtag-wrap" id="hashtag-feed">
+      <div class="empty-state">Waiting for Dollar's next scan...</div>
     </div>
   </div>
 
-  <!-- HOT Trends -->
-  <div class="card">
-    <div class="card-title"><div class="dot" style="background:#ff3333"></div>🔴 HOT Trends</div>
-    <div id="hot-trends"><div class="empty">No HOT trends right now</div></div>
-  </div>
-
-  <!-- Rising Trends -->
-  <div class="card">
-    <div class="card-title"><div class="dot" style="background:#ffaa00"></div>🟡 Rising Trends</div>
-    <div id="rising-trends"><div class="empty">No RISING trends right now</div></div>
-  </div>
-
-  <!-- Watch Trends -->
-  <div class="card">
-    <div class="card-title"><div class="dot" style="background:#8888ff"></div>👁 Watch List</div>
-    <div id="watch-trends"><div class="empty">No trends to watch</div></div>
-  </div>
-
-  <!-- Latest Draft -->
-  <div class="card half">
-    <div class="card-title"><div class="dot" style="background:#00ff88"></div>Latest Draft</div>
-    <div id="draft-section"><div class="empty">No draft available yet</div></div>
-  </div>
-
-  <!-- Activity Log -->
-  <div class="card">
-    <div class="card-title"><div class="dot" style="background:#888"></div>Activity Log</div>
-    <div class="log-list" id="log-list"><div class="empty">No activity yet</div></div>
-    <div class="refresh-time" id="last-refresh"></div>
-  </div>
-
-  <!-- Feedback Box -->
-  <!-- URGENT NEWS BOX -->
-  <div class="card full" id="urgent-box" style="border-color:#ff333344;background:linear-gradient(135deg,#1a1f2e,#1f1520)">
+  <!-- ════════════════════ URGENT BOX ════════════════════ -->
+  <div class="urgent-card">
     <div class="card-title">
-      <div class="dot" style="background:#ff3333;animation:pulse 0.8s infinite"></div>
+      <div class="title-dot red"></div>
       🚨 Urgent Company News — Push to Atlas Now
-      <span id="urgent-status-badge" style="margin-left:12px;font-size:11px;font-weight:normal;color:#888"></span>
+      <span id="urgent-status-badge" style="font-size:11px;font-weight:normal;color:var(--text-muted);margin-left:8px"></span>
     </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <!-- Input form -->
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div style="display:flex;gap:10px">
-          <div style="flex:1">
-            <div class="acc-label" style="margin-bottom:4px">Post Type</div>
-            <select id="urgent-type" style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none">
+    <div class="urgent-inner">
+      <!-- Input -->
+      <div class="urgent-form-col">
+        <div class="urgent-row">
+          <div>
+            <div class="field-label">Post Type</div>
+            <select id="urgent-type" class="urgent-select">
               <option value="NEWS">📰 Company News</option>
               <option value="SUCCESS">🏆 Success / Achievement</option>
               <option value="PARTNERSHIP">🤝 Partnership / MOU</option>
@@ -746,55 +974,48 @@ DASHBOARD_HTML = """
               <option value="ANNOUNCEMENT">📣 Announcement</option>
             </select>
           </div>
-          <div style="flex:1">
-            <div class="acc-label" style="margin-bottom:4px">Submitted by</div>
-            <input type="text" id="urgent-submitter" placeholder="Your name..." style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none">
+          <div>
+            <div class="field-label">Submitted by</div>
+            <input type="text" id="urgent-submitter" class="urgent-input" placeholder="Your name...">
           </div>
         </div>
         <div>
-          <div class="acc-label" style="margin-bottom:4px">Headline / News Title *</div>
-          <input type="text" id="urgent-headline" placeholder="e.g. avilonROBOTICS signs MOU with Bangkok Airways for drone delivery expansion..." style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:10px 12px;color:#e0e0e0;font-size:13px;outline:none">
+          <div class="field-label">Headline / News Title *</div>
+          <input type="text" id="urgent-headline" class="urgent-input" placeholder="e.g. avilonROBOTICS signs MOU with Bangkok Airways...">
         </div>
         <div>
-          <div class="acc-label" style="margin-bottom:4px">News Details (optional but recommended)</div>
-          <textarea id="urgent-details" placeholder="Add context — who, what, where, when, why. Any specific message or quote to include..." style="width:100%;background:#0f1117;border:1px solid #ff333344;border-radius:8px;padding:10px 12px;color:#e0e0e0;font-size:13px;outline:none;resize:vertical;min-height:80px;font-family:Segoe UI,sans-serif"></textarea>
+          <div class="field-label">News Details (optional but recommended)</div>
+          <textarea id="urgent-details" class="urgent-textarea" placeholder="Add context — who, what, where, when, why. Any specific message or quote to include..."></textarea>
         </div>
-        <button id="urgent-push-btn" onclick="pushUrgentNews()" style="background:linear-gradient(90deg,#ff333322,#ff660022);border:1px solid #ff3333;color:#ff6666;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:all 0.2s;align-self:flex-start">
+        <button id="urgent-push-btn" class="urgent-push-btn" onclick="pushUrgentNews()">
           🚨 Push to Atlas — Generate Post Now
         </button>
-        <div id="urgent-confirm" style="font-size:12px;color:#00ff88;display:none;font-weight:700"></div>
+        <div id="urgent-confirm" class="urgent-confirm"></div>
       </div>
-
-      <!-- Draft output -->
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div class="acc-label">Draft Output — After Pipeline Completes</div>
-        <div id="urgent-pipeline-status" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px"></div>
-        <div id="urgent-draft-output" style="background:#0f1117;border:1px solid #ffffff08;border-radius:8px;padding:12px;min-height:140px;max-height:280px;overflow-y:auto;font-size:13px;color:#888;line-height:1.7;white-space:pre-wrap">
-          Waiting for urgent news push...
-        </div>
-        <button id="urgent-copy-btn" onclick="copyUrgentDraft()" style="display:none;background:#00d4ff22;border:1px solid #00d4ff55;color:#00d4ff;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;align-self:flex-start">
-          📋 Copy Post
-        </button>
+      <!-- Output -->
+      <div class="urgent-output-col">
+        <div class="field-label">Draft Output — After Pipeline Completes</div>
+        <div class="urgent-pipeline-steps" id="urgent-pipeline-status"></div>
+        <div id="urgent-draft-output" class="urgent-draft-output">Waiting for urgent news push...</div>
+        <button id="urgent-copy-btn" class="urgent-copy-btn" onclick="copyUrgentDraft()">📋 Copy Post</button>
       </div>
     </div>
   </div>
 
-  <!-- Team Feedback on Draft -->
-  <div class="card full">
+  <!-- ════════════════════ FEEDBACK BOX ════════════════════ -->
+  <div class="card">
     <div class="card-title">
-      <div class="dot" style="background:#ffaa00"></div>
+      <div class="title-dot yellow"></div>
       Team Feedback on Draft
-      <span id="feedback-count" style="font-size:11px;color:#555;font-weight:normal;margin-left:4px"></span>
-      <button class="clear-btn" onclick="clearFeedback()">🗑 Clear all</button>
+      <span class="feedback-count" id="feedback-count"></span>
+      <button class="clear-btn" onclick="clearFeedback()" style="margin-left:auto">🗑 Clear all</button>
     </div>
-    <div style="font-size:11px;color:#555;margin-bottom:14px;margin-top:-8px">Leave comments for the team — Dollar, Atlas, Vector, Spark, Sigma</div>
-
+    <div class="fb-subtitle">Leave comments for the team — Dollar, Atlas, Vector, Spark, Sigma</div>
     <div class="feedback-list" id="feedback-list">
-      <div class="empty">No feedback yet — be the first to comment</div>
+      <div class="fb-empty">No feedback yet — be the first to comment</div>
     </div>
-
     <div class="feedback-form">
-      <div class="fb-row">
+      <div class="fb-form-row">
         <input type="text" id="fb-author" placeholder="Your name (e.g. ฟ้าใส, P'Arm...)" maxlength="40">
         <select id="fb-verdict">
           <option value="comment">💬 Comment</option>
@@ -803,18 +1024,19 @@ DASHBOARD_HTML = """
         </select>
       </div>
       <textarea id="fb-text" placeholder="Write your feedback on this draft... (e.g. แก้ hashtag, เพิ่ม CTA, โทนดีแล้ว)"></textarea>
-      <button class="submit-btn" onclick="submitFeedback()">Send Feedback →</button>
+      <div class="fb-form-actions">
+        <button class="submit-btn" onclick="submitFeedback()">Send Feedback →</button>
+      </div>
     </div>
   </div>
 
-  <!-- Agent Command Center -->
-  <div class="card full">
+  <!-- ════════════════════ AGENT COMMAND CENTER ════════════════════ -->
+  <div class="card">
     <div class="card-title">
-      <div class="dot" style="background:#00d4ff"></div>
+      <div class="title-dot"></div>
       Agent Command Center
     </div>
 
-    <!-- Agent tabs -->
     <div class="acc-tabs">
       <button class="acc-tab active" onclick="switchAccTab('trend-monitor', this)">📡 Dollar (Trend Monitor)</button>
       <button class="acc-tab" onclick="switchAccTab('editor-in-chief', this)">🎬 Atlas (Editor in Chief)</button>
@@ -823,7 +1045,7 @@ DASHBOARD_HTML = """
       <button class="acc-tab" onclick="switchAccTab('proofreader', this)">✅ Sigma (Proofreader)</button>
     </div>
 
-    <!-- trend-monitor panel -->
+    <!-- trend-monitor -->
     <div class="acc-panel active" id="acc-trend-monitor">
       <div class="acc-agent-header">
         <div class="acc-agent-icon">📡</div>
@@ -836,7 +1058,7 @@ DASHBOARD_HTML = """
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
           <textarea class="acc-textarea" id="cmd-trend-monitor" placeholder="e.g. Scan Thai logistics trends on X right now..."></textarea>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div class="acc-send-row">
             <button class="acc-send-btn" onclick="sendAgentCommand('trend-monitor')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-trend-monitor">Command queued ✓</span>
           </div>
@@ -849,14 +1071,12 @@ DASHBOARD_HTML = """
         </div>
         <div class="acc-output-col">
           <div class="acc-label">Last Agent Response / Output</div>
-          <div class="acc-response-area" id="resp-trend-monitor">
-            <span style="color:#444">No response yet — send a command to get started.</span>
-          </div>
+          <div class="acc-response-area" id="resp-trend-monitor"><span style="color:#374151">No response yet — send a command to get started.</span></div>
         </div>
       </div>
     </div>
 
-    <!-- editor-in-chief panel -->
+    <!-- editor-in-chief -->
     <div class="acc-panel" id="acc-editor-in-chief">
       <div class="acc-agent-header">
         <div class="acc-agent-icon">🎬</div>
@@ -869,7 +1089,7 @@ DASHBOARD_HTML = """
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
           <textarea class="acc-textarea" id="cmd-editor-in-chief" placeholder="e.g. Run this week's campaign — assign KNOWLEDGE post on Photon Inventra..."></textarea>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div class="acc-send-row">
             <button class="acc-send-btn" onclick="sendAgentCommand('editor-in-chief')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-editor-in-chief">Command queued ✓</span>
           </div>
@@ -882,14 +1102,12 @@ DASHBOARD_HTML = """
         </div>
         <div class="acc-output-col">
           <div class="acc-label">Last Agent Response / Output</div>
-          <div class="acc-response-area" id="resp-editor-in-chief">
-            <span style="color:#444">No response yet — send a command to get started.</span>
-          </div>
+          <div class="acc-response-area" id="resp-editor-in-chief"><span style="color:#374151">No response yet — send a command to get started.</span></div>
         </div>
       </div>
     </div>
 
-    <!-- tech-writer panel -->
+    <!-- tech-writer -->
     <div class="acc-panel" id="acc-tech-writer">
       <div class="acc-agent-header">
         <div class="acc-agent-icon">✍️</div>
@@ -902,7 +1120,7 @@ DASHBOARD_HTML = """
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
           <textarea class="acc-textarea" id="cmd-tech-writer" placeholder="e.g. Write KNOWLEDGE post about warehouse drone technology for Thai SMEs..."></textarea>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div class="acc-send-row">
             <button class="acc-send-btn" onclick="sendAgentCommand('tech-writer')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-tech-writer">Command queued ✓</span>
           </div>
@@ -915,14 +1133,12 @@ DASHBOARD_HTML = """
         </div>
         <div class="acc-output-col">
           <div class="acc-label">Last Agent Response / Output</div>
-          <div class="acc-response-area" id="resp-tech-writer">
-            <span style="color:#444">No response yet — send a command to get started.</span>
-          </div>
+          <div class="acc-response-area" id="resp-tech-writer"><span style="color:#374151">No response yet — send a command to get started.</span></div>
         </div>
       </div>
     </div>
 
-    <!-- ad-writer panel -->
+    <!-- ad-writer -->
     <div class="acc-panel" id="acc-ad-writer">
       <div class="acc-agent-header">
         <div class="acc-agent-icon">📢</div>
@@ -935,7 +1151,7 @@ DASHBOARD_HTML = """
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
           <textarea class="acc-textarea" id="cmd-ad-writer" placeholder="e.g. Write 3 HARD SELL variants for Photon Inventra demo — benefit-led..."></textarea>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div class="acc-send-row">
             <button class="acc-send-btn" onclick="sendAgentCommand('ad-writer')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-ad-writer">Command queued ✓</span>
           </div>
@@ -948,14 +1164,12 @@ DASHBOARD_HTML = """
         </div>
         <div class="acc-output-col">
           <div class="acc-label">Last Agent Response / Output</div>
-          <div class="acc-response-area" id="resp-ad-writer">
-            <span style="color:#444">No response yet — send a command to get started.</span>
-          </div>
+          <div class="acc-response-area" id="resp-ad-writer"><span style="color:#374151">No response yet — send a command to get started.</span></div>
         </div>
       </div>
     </div>
 
-    <!-- proofreader panel -->
+    <!-- proofreader -->
     <div class="acc-panel" id="acc-proofreader">
       <div class="acc-agent-header">
         <div class="acc-agent-icon">✅</div>
@@ -968,153 +1182,227 @@ DASHBOARD_HTML = """
         <div class="acc-input-col">
           <div class="acc-label">Command / Instruction</div>
           <textarea class="acc-textarea" id="cmd-proofreader" placeholder="e.g. Review latest draft — full QA check on tone, facts, and hashtags..."></textarea>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div class="acc-send-row">
             <button class="acc-send-btn" onclick="sendAgentCommand('proofreader')">Send to Agent →</button>
             <span class="acc-confirm" id="confirm-proofreader">Command queued ✓</span>
           </div>
           <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
           <div class="acc-suggestions">
-            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','✅ Review & approve latest draft')">✅ Review & approve latest draft</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','✅ Review & approve latest draft')">✅ Review &amp; approve latest draft</button>
             <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','🔍 Full QA — facts + tone + hashtags')">🔍 Full QA — facts + tone + hashtags</button>
             <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','🔄 Fix and approve')">🔄 Fix and approve</button>
           </div>
         </div>
         <div class="acc-output-col">
           <div class="acc-label">Last Agent Response / Output</div>
-          <div class="acc-response-area" id="resp-proofreader">
-            <span style="color:#444">No response yet — send a command to get started.</span>
-          </div>
+          <div class="acc-response-area" id="resp-proofreader"><span style="color:#374151">No response yet — send a command to get started.</span></div>
         </div>
       </div>
     </div>
 
     <!-- Command History -->
-    <div style="margin-top:24px;border-top:1px solid #ffffff08;padding-top:16px">
-      <div class="acc-label" style="margin-bottom:10px">Recent Command History <span id="acc-history-refresh" style="color:#444;font-size:10px;font-weight:normal;margin-left:6px"></span></div>
-      <div id="acc-cmd-history" style="max-height:200px;overflow-y:auto">
-        <div class="empty">No commands sent yet</div>
+    <div class="acc-cmd-history-wrap">
+      <div class="acc-label">
+        Recent Command History
+        <span class="acc-history-ts" id="acc-history-refresh"></span>
+      </div>
+      <div class="acc-cmd-list" id="acc-cmd-history" style="margin-top:10px">
+        <div class="empty-state">No commands sent yet</div>
       </div>
     </div>
   </div>
 
-</div>
+</div><!-- /main-wrap -->
 
 <script>
+// ── Constants ──
 const AGENT_NAMES = {
-  'trend-monitor': 'Dollar',
+  'trend-monitor':   'Dollar',
   'editor-in-chief': 'Atlas',
-  'tech-writer': 'Vector',
-  'ad-writer': 'Spark',
-  'proofreader': 'Sigma'
+  'tech-writer':     'Vector',
+  'ad-writer':       'Spark',
+  'proofreader':     'Sigma'
 };
 
-async function fetchData() {
-  const res = await fetch('/api/data');
-  const data = await res.json();
+// ── SSE Connection ──
+let sseConnected = false;
+let logEntries = [];
+let activeLogFilter = 'All';
 
-  // Clock
-  document.getElementById('clock').textContent = new Date().toLocaleString('th-TH');
+const evtSource = new EventSource('/api/stream');
 
-  // Stats
-  document.getElementById('stat-hot').textContent = data.trends.hot.length;
-  document.getElementById('stat-rising').textContent = data.trends.rising.length;
-  document.getElementById('stat-drafts').textContent = data.draft ? 1 : 0;
+evtSource.onopen = () => {
+  sseConnected = true;
+  const dot = document.getElementById('conn-dot');
+  dot.classList.remove('disconnected');
+  dot.title = 'SSE Connected';
+};
 
-  // Live Hashtag Feed
-  const hashFeed = document.getElementById('hashtag-feed');
-  const hashTime = document.getElementById('hashtag-scan-time');
-  if (data.hashtags && data.hashtags.length) {
-    hashTime.textContent = '— Dollar scanned ' + new Date().toLocaleTimeString('th-TH');
-    hashFeed.innerHTML = data.hashtags.map(h => `
-      <span class="hashtag-pill ${h.urgency || 'watch'}" title="${h.signal || ''}">
-        ${h.tag}
-        <span class="pill-platform">${h.platform || ''}</span>
-      </span>`).join('');
-  } else {
-    hashTime.textContent = '';
-    hashFeed.innerHTML = '<div class="empty">Waiting for Dollar\'s next scan...</div>';
+evtSource.onmessage = (e) => {
+  try {
+    const data = JSON.parse(e.data);
+    updateAgentCards(data.agents);
+    updateLogPanel(data.log);
+    updateHashtagFeed(data.hashtags);
+    updateDraftPanel(data.draft);
+  } catch(err) {
+    console.error('SSE parse error', err);
   }
+};
 
-  // Pipeline status
-  const hasDraft = data.draft !== null;
-  const isApproved = data.draft?.status === 'APPROVED';
-  const hasHot = data.trends.hot.length > 0 || data.trends.rising.length > 0;
+evtSource.onerror = () => {
+  sseConnected = false;
+  const dot = document.getElementById('conn-dot');
+  dot.classList.add('disconnected');
+  dot.title = 'SSE Disconnected — reconnecting...';
+};
 
-  const steps = ['s1','s2','s3','s4','s5','s6'];
-  steps.forEach(s => document.getElementById(s).className = 'step-icon idle');
+// ── updateAgentCards ──
+function updateAgentCards(agents) {
+  if (!agents || !agents.length) return;
+  agents.forEach(a => {
+    const card = document.getElementById('agent-' + a.id);
+    if (!card) return;
+    card.className = 'agent-card status-' + (a.status || 'idle');
 
-  if (isApproved) {
-    ['s1','s2','s3','s5','s6'].forEach(s => document.getElementById(s).className = 'step-icon done');
-  } else if (hasDraft) {
-    ['s1','s2','s3'].forEach(s => document.getElementById(s).className = 'step-icon done');
-    document.getElementById('s5').className = 'step-icon active';
-  } else if (hasHot) {
-    document.getElementById('s1').className = 'step-icon done';
-    document.getElementById('s2').className = 'step-icon active';
-  } else if (data.trends.generated !== 'No report yet') {
-    document.getElementById('s1').className = 'step-icon done';
-  }
+    const badgeEl = card.querySelector('.agent-badge');
+    const statusLabels = {
+      idle: 'idle', running: 'running', thinking: 'thinking', done: 'done', error: 'error'
+    };
+    const s = a.status || 'idle';
+    badgeEl.className = 'agent-badge badge-' + s;
+    badgeEl.innerHTML = '<span class="badge-dot"></span>' + (statusLabels[s] || s);
 
-  // Trends
-  function renderTrends(items, level) {
-    if (!items.length) return '<div class="empty">None right now</div>';
-    return items.map(t => `
-      <div class="trend-item">
-        <h4>${t.trend || '—'}</h4>
-        ${t.signal ? `<p>${t.signal}</p>` : ''}
-        ${t.angle ? `<p class="angle">💡 ${t.angle}</p>` : ''}
-        ${t.action ? `<p style="color:#666;font-size:11px;margin-top:4px">⏱ ${t.action}</p>` : ''}
-      </div>`).join('');
-  }
-  document.getElementById('hot-trends').innerHTML = renderTrends(data.trends.hot, 'hot');
-  document.getElementById('rising-trends').innerHTML = renderTrends(data.trends.rising, 'rising');
-  document.getElementById('watch-trends').innerHTML = renderTrends(data.trends.watch, 'watch');
+    const taskEl = card.querySelector('.agent-task');
+    taskEl.textContent = a.task || '—';
 
-  // Draft
-  const ds = document.getElementById('draft-section');
-  if (data.draft) {
-    const st = data.draft.status || '';
-    let statusDisplay = '';
-    if (st.includes('APPROVED')) {
-      statusDisplay = '<span style="color:#00ff88">✅ Approved by Sigma</span>';
-    } else if (st.includes('BLOCKED')) {
-      statusDisplay = '<span style="color:#ff6666">🚫 Blocked by Sigma — needs review</span>';
-    } else if (st.includes('PENDING')) {
-      statusDisplay = '<span style="color:#ffcc44">⏳ Pending Sigma review</span>';
-    } else {
-      statusDisplay = `<span>${st || '—'}</span>`;
-    }
-    const writtenBy = data.draft.written_by ? `<div class="meta-pill"><strong>Written by</strong> Vector</div>` : '';
-    ds.innerHTML = `
-      <div class="draft-meta">
-        <div class="meta-pill"><strong>Status:</strong> ${statusDisplay}</div>
-        ${writtenBy}
-        <div class="meta-pill"><strong>Urgency:</strong> ${data.draft.trend_urgency || '—'}</div>
-        <div class="meta-pill"><strong>Deadline:</strong> ${data.draft.deadline || '—'}</div>
-        <div class="meta-pill"><strong>Generated:</strong> ${data.draft.generated || '—'}</div>
-      </div>
-      <div class="draft-post" id="draft-body">${data.draft.body || 'No content'}</div>
-      <button class="copy-btn" onclick="copyDraft()">📋 Copy Post</button>`;
-  } else {
-    ds.innerHTML = '<div class="empty">No draft available — waiting for HOT trend</div>';
-  }
-
-  // Calendar highlight today
-  const days = {1:'mon',3:'wed',5:'fri',0:'sun'};
-  const today = new Date().getDay();
-  Object.values(days).forEach(d => document.getElementById('cal-'+d)?.classList.remove('today'));
-  if (days[today]) document.getElementById('cal-'+days[today])?.classList.add('today');
-
-  // Log
-  const logEl = document.getElementById('log-list');
-  if (data.log.length) {
-    logEl.innerHTML = data.log.map(l => `<div class="log-item">${l}</div>`).join('');
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-
-  document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString('th-TH');
+    const updEl = card.querySelector('.agent-updated');
+    updEl.textContent = a.updated ? 'Updated ' + a.updated : '';
+  });
 }
 
+// ── updateLogPanel ──
+function updateLogPanel(entries) {
+  if (!entries || !entries.length) return;
+  logEntries = entries;
+  renderLog();
+}
+
+function setLogFilter(filter, btn) {
+  activeLogFilter = filter;
+  document.querySelectorAll('.log-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderLog();
+}
+
+function renderLog() {
+  const el = document.getElementById('log-list');
+  const filtered = activeLogFilter === 'All'
+    ? logEntries
+    : logEntries.filter(e => e.agent === activeLogFilter);
+
+  if (!filtered.length) {
+    el.innerHTML = '<div class="log-empty">No entries for this agent yet</div>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(entry => {
+    const ts = entry.ts ? '<span class="log-ts">' + entry.ts + '</span>' : '';
+    const agentTag = '<span class="log-agent-tag ' + (entry.agent || 'System') + '">[' + (entry.agent || 'SYS') + ']</span>';
+    const msg = '<span class="log-msg">' + escHtml(entry.message || '') + '</span>';
+    return '<div class="log-entry">' + ts + agentTag + msg + '</div>';
+  }).join('');
+
+  // Auto-scroll to bottom
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── updateHashtagFeed ──
+function updateHashtagFeed(hashtags) {
+  const feed = document.getElementById('hashtag-feed');
+  const timeEl = document.getElementById('hashtag-scan-time');
+  if (!hashtags || !hashtags.length) {
+    feed.innerHTML = '<div class="empty-state">Waiting for Dollar\'s next scan...</div>';
+    timeEl.textContent = '';
+    return;
+  }
+  timeEl.textContent = '— scanned ' + new Date().toLocaleTimeString('th-TH');
+  feed.innerHTML = hashtags.map(h =>
+    '<span class="hashtag-pill ' + (h.urgency || 'watch') + '" title="' + escHtml(h.signal || '') + '">'
+    + escHtml(h.tag || '')
+    + (h.platform ? '<span class="pill-platform">' + escHtml(h.platform) + '</span>' : '')
+    + '</span>'
+  ).join('');
+}
+
+// ── updateDraftPanel ──
+function updateDraftPanel(draft) {
+  const ds = document.getElementById('draft-section');
+  if (!draft || !draft.body) {
+    ds.innerHTML = '<div class="draft-empty">No draft available — waiting for HOT trend</div>';
+    return;
+  }
+
+  const st = draft.status || '';
+  let statusBadge = '';
+  if (st.includes('APPROVED')) {
+    statusBadge = '<span class="draft-badge draft-approved">✅ Approved by Sigma</span>';
+  } else if (st.includes('BLOCKED')) {
+    statusBadge = '<span class="draft-badge draft-blocked">🚫 Blocked — needs review</span>';
+  } else {
+    statusBadge = '<span class="draft-badge draft-pending">⏳ Pending Sigma review</span>';
+  }
+
+  const isUrgent = (draft.trend_urgency || '').toLowerCase() === 'urgent' || (draft.deadline || '').toLowerCase().includes('urgent');
+  const deadlineBadge = isUrgent ? '<span class="deadline-badge">⚡ URGENT DEADLINE</span>' : '';
+
+  ds.innerHTML =
+    '<div class="draft-status-row">'
+    + statusBadge
+    + (draft.written_by ? '<span class="meta-pill"><strong>By</strong> Vector</span>' : '')
+    + '<span class="meta-pill"><strong>Urgency:</strong> ' + escHtml(draft.trend_urgency || '—') + '</span>'
+    + '<span class="meta-pill"><strong>Deadline:</strong> ' + escHtml(draft.deadline || '—') + '</span>'
+    + '</div>'
+    + '<div class="draft-body" id="draft-body">' + escHtml(draft.body || '') + '</div>'
+    + '<div class="draft-actions">'
+    + '<button class="copy-btn" onclick="copyDraft()">📋 Copy Post</button>'
+    + deadlineBadge
+    + '</div>';
+}
+
+// ── Trend data (still via /api/data for trends) ──
+async function fetchTrendData() {
+  try {
+    const res = await fetch('/api/data');
+    const data = await res.json();
+    renderTrends(data.trends);
+  } catch(e) {}
+}
+
+function renderTrends(trends) {
+  if (!trends) return;
+  function renderItems(items) {
+    if (!items || !items.length) return '<div class="empty-state">None right now</div>';
+    return items.map(t =>
+      '<div class="trend-item">'
+      + '<h4>' + escHtml(t.trend || '—') + '</h4>'
+      + (t.signal ? '<p>' + escHtml(t.signal) + '</p>' : '')
+      + (t.angle  ? '<p class="angle">💡 ' + escHtml(t.angle) + '</p>' : '')
+      + (t.action ? '<p class="action">⏱ ' + escHtml(t.action) + '</p>' : '')
+      + '</div>'
+    ).join('');
+  }
+  document.getElementById('hot-trends').innerHTML    = renderItems(trends.hot);
+  document.getElementById('rising-trends').innerHTML = renderItems(trends.rising);
+  document.getElementById('watch-trends').innerHTML  = renderItems(trends.watch);
+}
+
+// ── Clock ──
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleString('th-TH');
+}
+
+// ── copyDraft ──
 function copyDraft() {
   const body = document.getElementById('draft-body');
   if (body) {
@@ -1124,41 +1412,41 @@ function copyDraft() {
   }
 }
 
+// ── Feedback ──
 async function loadFeedback() {
   const res = await fetch('/api/feedback');
   const items = await res.json();
   const el = document.getElementById('feedback-list');
   const count = document.getElementById('feedback-count');
-  count.textContent = items.length ? `(${items.length})` : '';
+  count.textContent = items.length ? '(' + items.length + ')' : '';
   if (!items.length) {
-    el.innerHTML = '<div class="empty">No feedback yet — be the first to comment</div>';
+    el.innerHTML = '<div class="fb-empty">No feedback yet — be the first to comment</div>';
     return;
   }
   const verdictLabel = { approve: '✅ Approved', revise: '🔄 Needs Revision', comment: '💬 Comment' };
-  el.innerHTML = items.map((f, i) => `
-    <div class="feedback-item">
-      <div class="fb-header">
-        <span class="fb-author">${f.author || 'Anonymous'}</span>
-        <span class="fb-time">${f.time}</span>
-      </div>
-      <div class="fb-text">${f.text}</div>
-      <span class="fb-verdict ${f.verdict}">${verdictLabel[f.verdict] || '💬 Comment'}</span>
-    </div>`).join('');
+  el.innerHTML = items.map(f =>
+    '<div class="feedback-item">'
+    + '<div class="fb-header">'
+    + '<span class="fb-author">' + escHtml(f.author || 'Anonymous') + '</span>'
+    + '<span class="fb-time">' + escHtml(f.time || '') + '</span>'
+    + '</div>'
+    + '<div class="fb-text">' + escHtml(f.text || '') + '</div>'
+    + '<span class="fb-verdict ' + (f.verdict || 'comment') + '">' + (verdictLabel[f.verdict] || '💬 Comment') + '</span>'
+    + '</div>'
+  ).join('');
   el.scrollTop = el.scrollHeight;
 }
 
 async function submitFeedback() {
-  const author = document.getElementById('fb-author').value.trim() || 'Anonymous';
-  const text = document.getElementById('fb-text').value.trim();
+  const author  = document.getElementById('fb-author').value.trim() || 'Anonymous';
+  const text    = document.getElementById('fb-text').value.trim();
   const verdict = document.getElementById('fb-verdict').value;
   if (!text) { alert('Please write your feedback first'); return; }
-
   await fetch('/api/feedback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ author, text, verdict })
   });
-
   document.getElementById('fb-text').value = '';
   document.getElementById('fb-verdict').value = 'comment';
   loadFeedback();
@@ -1171,7 +1459,6 @@ async function clearFeedback() {
 }
 
 // ── Agent Command Center ──
-
 function switchAccTab(agentId, btn) {
   document.querySelectorAll('.acc-tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.acc-panel').forEach(p => p.classList.remove('active'));
@@ -1185,12 +1472,16 @@ function fillCmd(agentId, text) {
 }
 
 async function sendAgentCommand(agentId) {
-  const ta = document.getElementById('cmd-' + agentId);
-  const confirm = document.getElementById('confirm-' + agentId);
-  const btn = ta.closest('.acc-input-col').querySelector('.acc-send-btn');
+  const ta      = document.getElementById('cmd-' + agentId);
+  const confEl  = document.getElementById('confirm-' + agentId);
+  const btn     = ta.closest('.acc-input-col').querySelector('.acc-send-btn');
   const command = ta.value.trim();
-  if (!command) { ta.focus(); ta.style.borderColor = '#ff333388'; setTimeout(() => ta.style.borderColor = '', 1000); return; }
-
+  if (!command) {
+    ta.focus();
+    ta.style.borderColor = 'rgba(239,68,68,0.7)';
+    setTimeout(() => ta.style.borderColor = '', 1000);
+    return;
+  }
   btn.disabled = true;
   try {
     const res = await fetch('/api/agent/command', {
@@ -1200,12 +1491,12 @@ async function sendAgentCommand(agentId) {
     });
     const data = await res.json();
     if (data.ok) {
-      confirm.style.display = 'inline';
+      confEl.style.display = 'inline';
       ta.value = '';
-      setTimeout(() => { confirm.style.display = 'none'; }, 3000);
+      setTimeout(() => { confEl.style.display = 'none'; }, 3000);
       loadAgentCommands();
     }
-  } catch (e) {
+  } catch(e) {
     alert('Error sending command — is the server running?');
   } finally {
     btn.disabled = false;
@@ -1214,51 +1505,45 @@ async function sendAgentCommand(agentId) {
 
 async function loadAgentCommands() {
   try {
-    const res = await fetch('/api/agent/commands');
+    const res   = await fetch('/api/agent/commands');
     const items = await res.json();
-    const el = document.getElementById('acc-cmd-history');
-    const ts = document.getElementById('acc-history-refresh');
+    const el    = document.getElementById('acc-cmd-history');
+    const ts    = document.getElementById('acc-history-refresh');
     ts.textContent = '— refreshed ' + new Date().toLocaleTimeString('th-TH');
-
     if (!items.length) {
-      el.innerHTML = '<div class="empty">No commands sent yet</div>';
+      el.innerHTML = '<div class="empty-state">No commands sent yet</div>';
       return;
     }
-
-    const statusClass = { pending: 'pending', done: 'done', error: 'error' };
-    el.innerHTML = items.map(c => `
-      <div class="acc-cmd-item">
-        <span class="acc-cmd-agent">${AGENT_NAMES[c.agent] || c.agent}</span>
-        <span class="acc-cmd-text">${c.command}</span>
-        <span class="acc-cmd-time">${c.timestamp ? c.timestamp.replace('T',' ').slice(0,16) : ''}</span>
-        <span class="acc-cmd-status ${statusClass[c.status] || 'pending'}">${c.status || 'pending'}</span>
-      </div>`).join('');
+    el.innerHTML = items.map(c =>
+      '<div class="acc-cmd-item">'
+      + '<span class="acc-cmd-agent">' + escHtml(AGENT_NAMES[c.agent] || c.agent) + '</span>'
+      + '<span class="acc-cmd-text">'  + escHtml(c.command || '') + '</span>'
+      + '<span class="acc-cmd-time">'  + escHtml((c.timestamp || '').replace('T',' ').slice(0,16)) + '</span>'
+      + '<span class="acc-cmd-status ' + (c.status || 'pending') + '">' + escHtml(c.status || 'pending') + '</span>'
+      + '</div>'
+    ).join('');
 
     // Populate last response per agent
-    const agents = ['trend-monitor','editor-in-chief','tech-writer','ad-writer','proofreader'];
-    agents.forEach(a => {
+    ['trend-monitor','editor-in-chief','tech-writer','ad-writer','proofreader'].forEach(a => {
       const last = items.filter(c => c.agent === a && c.response).pop();
       const respEl = document.getElementById('resp-' + a);
-      if (respEl && last && last.response) {
-        respEl.textContent = last.response;
-      }
+      if (respEl && last && last.response) respEl.textContent = last.response;
     });
-  } catch (e) {
-    // silently fail — server may not have the route yet
-  }
+  } catch(e) {}
 }
 
 // ── Urgent News ──
 let urgentPolling = null;
 
 async function pushUrgentNews() {
-  const headline = document.getElementById('urgent-headline').value.trim();
-  const details = document.getElementById('urgent-details').value.trim();
-  const type = document.getElementById('urgent-type').value;
-  const submitter = document.getElementById('urgent-submitter').value.trim() || 'Dashboard User';
+  const headline   = document.getElementById('urgent-headline').value.trim();
+  const details    = document.getElementById('urgent-details').value.trim();
+  const type       = document.getElementById('urgent-type').value;
+  const submitter  = document.getElementById('urgent-submitter').value.trim() || 'Dashboard User';
   if (!headline) {
-    document.getElementById('urgent-headline').style.borderColor = '#ff3333';
-    setTimeout(() => document.getElementById('urgent-headline').style.borderColor = '#ff333344', 1500);
+    const hl = document.getElementById('urgent-headline');
+    hl.style.borderColor = 'rgba(239,68,68,0.9)';
+    setTimeout(() => hl.style.borderColor = '', 1500);
     return;
   }
   const btn = document.getElementById('urgent-push-btn');
@@ -1266,7 +1551,6 @@ async function pushUrgentNews() {
   btn.textContent = '⏳ Sending to Atlas...';
   document.getElementById('urgent-draft-output').textContent = 'Atlas is reading your news...';
   document.getElementById('urgent-copy-btn').style.display = 'none';
-
   try {
     const res = await fetch('/api/urgent', {
       method: 'POST',
@@ -1303,27 +1587,23 @@ async function checkUrgentStatus() {
     const data = await res.json();
     const pipeline = data.pipeline;
     const statusEl = document.getElementById('urgent-status-badge');
-    const stepsEl = document.getElementById('urgent-pipeline-status');
+    const stepsEl  = document.getElementById('urgent-pipeline-status');
     const outputEl = document.getElementById('urgent-draft-output');
-    const btn = document.getElementById('urgent-push-btn');
+    const btn      = document.getElementById('urgent-push-btn');
 
-    const steps = [
-      {id: 'ps-atlas', label: 'Atlas', done: pipeline.step && pipeline.step !== 'Atlas assigning...'},
-      {id: 'ps-vector', label: 'Vector', done: pipeline.step && !pipeline.step.includes('Vector') && !pipeline.step.includes('Atlas')},
-      {id: 'ps-sigma', label: 'Sigma', done: pipeline.status === 'done'}
-    ];
-
-    stepsEl.innerHTML = ['Atlas 🎬','Vector ✍️','Sigma ✅'].map((s,i) => {
-      const isDone = pipeline.status === 'done' || (i === 0 && pipeline.step && pipeline.step.includes('Vector')) || (i <= 1 && pipeline.step && pipeline.step.includes('Sigma'));
-      const isActive = pipeline.status === 'running' && pipeline.step && pipeline.step.toLowerCase().includes(s.split(' ')[0].toLowerCase());
-      const cls = isDone ? 'approved' : isActive ? 'pending' : '';
-      return `<span class="fb-verdict ${cls}" style="font-size:11px">${s}</span>`;
+    const step = pipeline.step || '';
+    const isDone = pipeline.status === 'done';
+    stepsEl.innerHTML = [['Atlas','🎬'], ['Vector','✍️'], ['Sigma','✅']].map(([name, icon], i) => {
+      let cls = 'ps-idle';
+      if (isDone || (i === 0 && step.toLowerCase().includes('vector')) || (i <= 1 && step.toLowerCase().includes('sigma'))) cls = 'ps-done';
+      else if (pipeline.status === 'running' && step.toLowerCase().includes(name.toLowerCase())) cls = 'ps-active';
+      return '<span class="pipeline-step-badge ' + cls + '">' + icon + ' ' + name + '</span>';
     }).join(' → ');
 
     if (pipeline.status === 'running') {
-      statusEl.textContent = '⏳ ' + (pipeline.step || 'Running...');
-      outputEl.textContent = pipeline.step || 'Pipeline running...';
-    } else if (pipeline.status === 'done') {
+      statusEl.textContent = '⏳ ' + (step || 'Running...');
+      outputEl.textContent = step || 'Pipeline running...';
+    } else if (isDone) {
       statusEl.textContent = '✅ Done — ' + (pipeline.last || '');
       clearInterval(urgentPolling);
       btn.disabled = false;
@@ -1344,23 +1624,30 @@ function copyUrgentDraft() {
   setTimeout(() => btn.textContent = '📋 Copy Post', 2000);
 }
 
-// On load — check if urgent pipeline was already running
-checkUrgentStatus();
+// ── Utility ──
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
-// Auto-refresh every 60 seconds
-fetchData();
+// ── Init ──
+updateClock();
+setInterval(updateClock, 1000);
+fetchTrendData();
+setInterval(fetchTrendData, 60000);
 loadFeedback();
-loadAgentCommands();
-setInterval(fetchData, 60000);
 setInterval(loadFeedback, 30000);
+loadAgentCommands();
 setInterval(loadAgentCommands, 30000);
-setInterval(() => {
-  document.getElementById('clock').textContent = new Date().toLocaleString('th-TH');
-}, 1000);
+checkUrgentStatus();
 </script>
 </body>
-</html>
-"""
+</html>"""
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -1406,7 +1693,6 @@ def post_agent_command():
     command = data.get("command", "").strip()
     if not agent or not command:
         return jsonify({"ok": False, "error": "agent and command are required"}), 400
-
     commands = get_agent_commands()
     entry = {
         "id": str(uuid.uuid4())[:8],
@@ -1424,6 +1710,76 @@ def post_agent_command():
 def get_agent_commands_route():
     commands = get_agent_commands()
     return jsonify(commands[-10:])
+
+# ── SSE Streams ───────────────────────────────────────────────────────────────
+
+@app.route("/api/stream")
+def api_stream():
+    """SSE endpoint — pushes full dashboard payload every 3 seconds."""
+    def event_generator():
+        while True:
+            try:
+                payload = build_stream_payload()
+                data = json.dumps(payload, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+                time.sleep(3)
+            except GeneratorExit:
+                break
+            except Exception:
+                time.sleep(3)
+    return Response(
+        event_generator(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
+
+@app.route("/api/log/stream")
+def api_log_stream():
+    """SSE endpoint — pushes log-only updates every 3 seconds."""
+    def log_generator():
+        while True:
+            try:
+                entries = parse_log_structured()
+                data = json.dumps(entries, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+                time.sleep(3)
+            except GeneratorExit:
+                break
+            except Exception:
+                time.sleep(3)
+    return Response(
+        log_generator(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
+
+# ── Post History ──────────────────────────────────────────────────────────────
+
+@app.route("/api/history", methods=["GET"])
+def get_history_route():
+    return jsonify(parse_post_history())
+
+@app.route("/api/history", methods=["POST"])
+def post_history_route():
+    data = request.get_json(force=True, silent=True) or {}
+    entry = {
+        "title":  data.get("title", "").strip(),
+        "type":   data.get("type", "").strip(),
+        "date":   data.get("date", datetime.now().strftime("%Y-%m-%d")),
+        "status": data.get("status", "draft"),
+    }
+    save_post_history(entry)
+    return jsonify({"ok": True})
+
+# ── Urgent Pipeline ───────────────────────────────────────────────────────────
 
 URGENT_STATUS_FILE = BASE / "plans/urgent-status.json"
 CLAUDE_EXE = "C:/Users/A/.local/bin/claude.exe"
