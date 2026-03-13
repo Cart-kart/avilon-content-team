@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proofreader / Fact-checker — Agent Definition File</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f4f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .wrapper {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .label {
+      font-size: 13px;
+      color: #888780;
+      margin-bottom: 10px;
+      letter-spacing: 0.02em;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      border: 0.5px solid #d3d1c7;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 0.5px solid #e8e6e0;
+      background: #faf9f6;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot-red   { background: #E24B4A; }
+    .dot-amber { background: #EF9F27; }
+    .dot-green { background: #639922; }
+    .filename {
+      font-size: 12px;
+      color: #888780;
+      margin-left: 8px;
+      font-family: "SF Mono", "Fira Code", monospace;
+    }
+    .ok { color: #3B6D11; }
+    pre {
+      margin: 0;
+      padding: 20px 24px;
+      font-size: 13px;
+      line-height: 1.8;
+      font-family: "SF Mono", "Fira Code", "Courier New", monospace;
+      color: #2c2c2a;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fff;
+    }
+    .key   { color: #534AB7; font-weight: 500; }
+    .val   { color: #0F6E56; }
+    .str   { color: #854F0B; }
+    .head  { color: #185FA5; font-weight: 600; }
+    .cmd   { color: #993C1D; font-weight: 500; }
+    .muted { color: #888780; }
+    .block { color: #A32D2D; font-weight: 500; }
+    .warn  { color: #854F0B; font-weight: 500; }
+    .pass  { color: #3B6D11; font-weight: 500; }
+    .note  { color: #3B6D11; font-weight: 500; }
+    .approved { color: #0F6E56; font-weight: 500; }
+    .blocked  { color: #A32D2D; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+
+    <!-- Agent definition file -->
+    <div>
+      <div class="label">~/.claude/agents/proofreader.md</div>
+      <div class="card">
+        <div class="titlebar">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-amber"></div>
+          <div class="dot dot-green"></div>
+          <span class="filename">proofreader.md</span>
+        </div>
+        <pre><span class="key">---
+name:</span> <span class="val">proofreader</span>
+<span class="key">description:</span> <span class="val">&gt;</span>
+  <span class="str">Reviews all drafts before publishing. Checks spelling,
+  grammar, fact accuracy, brand voice, and platform fit.
+  Always run this agent last before Editor approves.</span>
+<span class="key">tools:</span> <span class="val">WebSearch, Read, Write</span>
+<span class="key">model:</span> <span class="val">claude-sonnet-4-5</span>
+<span class="key">---</span>
+
+<span class="head"># Role</span>
+You are the final quality gate before any content
+goes live. Be thorough — one mistake in a published
+post damages brand credibility.
+
+<span class="head"># 4 check areas (run all in parallel)</span>
+
+<span class="cmd">1. SPELLING &amp; GRAMMAR</span>
+   - Thai spelling, sentence flow, punctuation
+   - No repeated words or awkward phrases
+   - English loan words spelled correctly
+
+<span class="cmd">2. FACT-CHECK</span>
+   - Every number, date, stat must match SOURCES
+   - If no source is provided for a claim → flag BLOCK
+   - Search web to verify if source is missing
+
+<span class="cmd">3. BRAND VOICE</span>
+   - Tech articles: informative, not preachy
+   - Ad copy: persuasive, not pushy or misleading
+   - No promises the company cannot keep
+
+<span class="cmd">4. PLATFORM FIT</span>
+   - LinkedIn: under 1,300 words
+   - Facebook: under 500 words
+   - X: under 280 chars per tweet
+   - CTA link placeholder present
+
+<span class="head"># Severity levels</span>
+<span class="block">BLOCK</span>  must fix before publish — fact error, false claim
+<span class="warn">WARN</span>   should fix — tone, length, missing CTA
+<span class="note">NOTE</span>   optional improvement — style suggestion
+
+<span class="head"># Output</span>
+Write review to: <span class="str">./reviews/review-[slug]-[platform].md</span>
+End with a clear verdict: <span class="approved">APPROVED</span> or <span class="blocked">BLOCKED</span></pre>
+      </div>
+    </div>
+
+    <!-- Review output example -->
+    <div>
+      <div class="label">./reviews/review-lastmile-cost-linkedin.md &nbsp;— ตัวอย่าง output</div>
+      <div class="card">
+        <div class="titlebar">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-amber"></div>
+          <div class="dot dot-green"></div>
+          <span class="filename">review-lastmile-cost-linkedin.md &nbsp;<span class="ok">(ตัวอย่าง output)</span></span>
+        </div>
+        <pre><span class="muted">---
+draft: tech-lastmile-cost-linkedin.md
+reviewed_by: proofreader
+---</span>
+
+<span class="head">## SPELLING &amp; GRAMMAR</span>
+<span class="note">NOTE</span>   บรรทัด 4: "ที่อยู่ไม่ชัด" → แนะนำ "ที่อยู่ไม่ครบถ้วน"
+        อ่านเป็นทางการมากขึ้นสำหรับ LinkedIn
+
+<span class="head">## FACT-CHECK</span>
+<span class="block">BLOCK</span>  บรรทัด 6: อ้างว่า "re-delivery cost สูงถึง 17 USD"
+        แต่ Statista 2024 ระบุ 14.4 USD — ตัวเลขไม่ตรง
+        ต้องแก้ก่อน publish
+
+<span class="warn">WARN</span>   บรรทัด 9: "ลดระยะ 15–25%" ไม่มี source แนบ
+        กรุณาเพิ่ม citation หรือปรับเป็น "สูงสุด 25%"
+
+<span class="head">## BRAND VOICE</span>
+<span class="note">NOTE</span>   ภาพรวม tone ดี — ให้ข้อมูลชัด ไม่ขาย
+
+<span class="head">## PLATFORM FIT</span>
+<span class="pass">PASS</span>   ความยาว 940 คำ — อยู่ในเกณฑ์ LinkedIn
+<span class="pass">PASS</span>   CTA และ link placeholder ครบ
+
+<span class="head">───────────────────────────────</span>
+<span class="blocked">VERDICT: BLOCKED</span>
+แก้ไข BLOCK item (ตัวเลข re-delivery) แล้วส่งใหม่</pre>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

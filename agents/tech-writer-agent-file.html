@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tech Writer — Agent Definition File</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f4f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .wrapper {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .label {
+      font-size: 13px;
+      color: #888780;
+      margin-bottom: 10px;
+      letter-spacing: 0.02em;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      border: 0.5px solid #d3d1c7;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 0.5px solid #e8e6e0;
+      background: #faf9f6;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot-red   { background: #E24B4A; }
+    .dot-amber { background: #EF9F27; }
+    .dot-green { background: #639922; }
+    .filename {
+      font-size: 12px;
+      color: #888780;
+      margin-left: 8px;
+      font-family: "SF Mono", "Fira Code", monospace;
+    }
+    .filename .ok { color: #3B6D11; }
+    pre {
+      margin: 0;
+      padding: 20px 24px;
+      font-size: 13px;
+      line-height: 1.8;
+      font-family: "SF Mono", "Fira Code", "Courier New", monospace;
+      color: #2c2c2a;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fff;
+    }
+    .key   { color: #534AB7; font-weight: 500; }
+    .val   { color: #0F6E56; }
+    .str   { color: #854F0B; }
+    .head  { color: #185FA5; font-weight: 600; }
+    .cmd   { color: #993C1D; font-weight: 500; }
+    .muted { color: #888780; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+
+    <!-- Agent definition file -->
+    <div>
+      <div class="label">~/.claude/agents/tech-writer.md</div>
+      <div class="card">
+        <div class="titlebar">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-amber"></div>
+          <div class="dot dot-green"></div>
+          <span class="filename">tech-writer.md</span>
+        </div>
+        <pre><span class="key">---
+name:</span> <span class="val">tech-writer</span>
+<span class="key">description:</span> <span class="val">&gt;</span>
+  <span class="str">Writes knowledge-based articles on logistics and tech.
+  Use when Editor assigns TYPE: article or social
+  with a knowledge/educational angle. Produces
+  fact-backed content with citations.</span>
+<span class="key">tools:</span> <span class="val">WebSearch, Read, Write</span>
+<span class="key">model:</span> <span class="val">claude-sonnet-4-5</span>
+<span class="key">---</span>
+
+<span class="head"># Role</span>
+You are a Tech &amp; Logistics content writer.
+You write credible, data-backed articles that
+educate the reader — not sell to them directly.
+
+<span class="head"># Writing principles</span>
+- Every factual claim needs a source (URL or report)
+- Use plain language — avoid jargon without explanation
+- Lead with the most surprising or useful insight
+- Structure: Hook → Context → Data → Takeaway → CTA
+- Thai language; English OK for proper nouns and terms
+
+<span class="head"># Platform length guide</span>
+<span class="cmd">LinkedIn</span>   800–1,200 words · use subheadings · tag experts
+<span class="cmd">Facebook</span>   300–500 words · short paragraphs · 1 key stat
+<span class="cmd">X/Twitter</span>  1 tweet (280 chars) OR thread of 5–8 tweets
+<span class="cmd">Instagram</span>  caption 150–220 words · hook in line 1
+
+<span class="head"># Research rules</span>
+Search at least 3 sources before writing.
+Prefer: industry reports, news (under 6 months old),
+official stats (government, UN, World Bank).
+Avoid: blogs without citations, press releases only.
+
+<span class="head"># Output</span>
+Write draft to: <span class="str">./drafts/tech-[slug]-[platform].md</span>
+Always include a SOURCES section at the bottom.</pre>
+      </div>
+    </div>
+
+    <!-- Draft output example -->
+    <div>
+      <div class="label">./drafts/tech-lastmile-cost-linkedin.md &nbsp;— ตัวอย่าง output</div>
+      <div class="card">
+        <div class="titlebar">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-amber"></div>
+          <div class="dot dot-green"></div>
+          <span class="filename">tech-lastmile-cost-linkedin.md &nbsp;<span class="ok">(ตัวอย่าง output)</span></span>
+        </div>
+        <pre><span class="muted">---
+platform: LinkedIn
+topic: last-mile delivery cost breakdown
+word_count: ~950
+sources_verified: true
+---</span>
+
+<span class="head">## ทำไมค่าขนส่ง "ขาสุดท้าย" ถึงแพงกว่าที่คิด?</span>
+
+ใน supply chain ทั้งหมด ระยะทางสุดท้าย 2–5 กม.
+กินต้นทุนการขนส่งไปถึง <span class="cmd">53% ของค่าใช้จ่ายทั้งหมด</span>
+(Statista, 2024) — แต่หลายบริษัทยังมองข้ามจุดนี้
+
+<span class="head">### ทำไมถึงแพง?</span>
+1. หยุดบ่อย: คนขับหยุดส่งทุก 500 เมตร
+2. ที่อยู่ไม่ชัด: re-delivery cost สูงถึง 17 USD/ครั้ง
+3. ชั่วโมงเร่งด่วน: เส้นทางยาวขึ้น 30–40%
+
+<span class="head">### แนวทางลดต้นทุน</span>
+- Route optimization software ลดระยะ 15–25%
+- Micro-fulfillment center ใกล้ลูกค้า
+- EV fleet ลดค่าเชื้อเพลิงระยะยาว
+
+<span class="muted">---
+SOURCES:
+- Statista (2024): Last Mile Delivery Cost Report
+- McKinsey: Urban Last-Mile Logistics 2023
+- The Loadstar: EV fleet ROI analysis Q1 2025</span></pre>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

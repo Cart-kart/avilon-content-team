@@ -1,0 +1,22 @@
+# Claude credentials & secrets
+.credentials.json
+*.key
+*.token
+
+# Claude internal folders
+backups/
+cache/
+downloads/
+shell-snapshots/
+plugins/
+plans/
+projects/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+*.swp
+*~

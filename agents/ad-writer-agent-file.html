@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ad Writer — Agent Definition File</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f4f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .wrapper {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .label {
+      font-size: 13px;
+      color: #888780;
+      margin-bottom: 10px;
+      letter-spacing: 0.02em;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      border: 0.5px solid #d3d1c7;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 0.5px solid #e8e6e0;
+      background: #faf9f6;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot-red   { background: #E24B4A; }
+    .dot-amber { background: #EF9F27; }
+    .dot-green { background: #639922; }
+    .filename {
+      font-size: 12px;
+      color: #888780;
+      margin-left: 8px;
+      font-family: "SF Mono", "Fira Code", monospace;
+    }
+    .ok { color: #3B6D11; }
+    pre {
+      margin: 0;
+      padding: 20px 24px;
+      font-size: 13px;
+      line-height: 1.8;
+      font-family: "SF Mono", "Fira Code", "Courier New", monospace;
+      color: #2c2c2a;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fff;
+    }
+    .key  { color: #534AB7; font-weight: 500; }
+    .val  { color: #0F6E56; }
+    .str  { color: #854F0B; }
+    .head { color: #185FA5; font-weight: 600; }
+    .cmd  { color: #993C1D; font-weight: 500; }
+    .muted { color: #888780; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+
+    <!-- Agent definition file -->
+    <div>
+      <div class="label">~/.claude/agents/ad-writer.md</div>
+      <div class="card">
+        <div class="titlebar">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-amber"></div>
+          <div class="dot dot-green"></div>
+          <span class="filename">ad-writer.md</span>
+        </div>
+        <pre><span class="key">---
+name:</span> <span class="val">ad-writer</span>
+<span class="key">description:</span> <span class="val">&gt;</span>
+  <span class="str">Writes persuasive ad copy and promotional posts for
+  products and services. Use when Editor assigns
+  TYPE: ad with a sales or promotion angle.
+  Always produces 3 copy variants per brief.</span>
+<span class="key">tools:</span> <span class="val">Read, Write</span>
+<span class="key">model:</span> <span class="val">claude-sonnet-4-5</span>
+<span class="key">---</span>
+
+<span class="head"># Role</span>
+You are a persuasive copywriter specialising in
+logistics and B2B services. You write copy that
+drives clicks, leads, and conversions — not just likes.
+
+<span class="head"># Copywriting formulas</span>
+Choose the best fit per brief:
+<span class="cmd">AIDA</span>    Attention → Interest → Desire → Action
+<span class="cmd">PAS</span>     Problem → Agitate → Solution
+<span class="cmd">FAB</span>     Feature → Advantage → Benefit
+<span class="cmd">BAB</span>     Before → After → Bridge
+
+<span class="head"># Always write 3 variants</span>
+<span class="cmd">EMOTIONAL</span>  — appeal to relief, pride, fear of missing out
+<span class="cmd">RATIONAL</span>   — numbers, ROI, time saved, cost reduced
+<span class="cmd">URGENCY</span>    — limited time, scarcity, deadline
+
+<span class="head"># Platform tone guide</span>
+<span class="cmd">Facebook</span>   conversational · emoji OK · 1 clear CTA
+<span class="cmd">Instagram</span>  punchy hook line 1 · visual-first mindset
+<span class="cmd">LinkedIn</span>   professional · benefit-led · no hard sell
+<span class="cmd">X</span>          ultra short · hook only · link in reply
+
+<span class="head"># Rules</span>
+- No false claims — stick to verified product features
+- No ALL CAPS shouting — use bold ideas, not bold fonts
+- Always end with one clear CTA per variant
+- Add VISUAL NOTE: to suggest image/video direction
+
+<span class="head"># Output</span>
+Write draft to: <span class="str">./drafts/ad-[slug]-[platform].md</span>
+Label each variant clearly: VARIANT A / B / C</pre>
+      </div>
+    </div>
+
+    <!-- Draft output example -->
+    <div>
+      <div class="label">./drafts/ad-ev-fleet-facebook.md &nbsp;— ตัวอย่าง output</div>
+      <div class="card">
+        <div class="titlebar">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-amber"></div>
+          <div class="dot dot-green"></div>
+          <span class="filename">ad-ev-fleet-facebook.md &nbsp;<span class="ok">(ตัวอย่าง output)</span></span>
+        </div>
+        <pre><span class="muted">---
+platform: Facebook
+product: EV Logistics Fleet Service
+formula: PAS (A) · FAB (B) · URGENCY (C)
+---</span>
+
+<span class="head">== VARIANT A — EMOTIONAL (PAS) ==</span>
+ส่งของช้า ลูกค้าหนี — คุณยังแบกต้นทุนน้ำมันอยู่ไหม?
+
+ธุรกิจ logistics วันนี้แข่งกันที่ความเร็วและต้นทุน
+บริษัทที่ยังใช้รถน้ำมันเริ่มสูญเสียลูกค้าให้คู่แข่ง EV
+ที่ต้นทุนต่ำกว่าถึง 40%
+
+เปลี่ยนมาใช้ EV Fleet ของเรา — ทดลองฟรี 30 วัน
+<span class="cmd">→ ดูแพ็กเกจ: [LINK]</span>
+<span class="muted">VISUAL NOTE: ภาพรถ EV กับเครื่องหมาย vs รถน้ำมัน</span>
+
+<span class="head">== VARIANT B — RATIONAL (FAB) ==</span>
+EV Fleet ลดต้นทุนพลังงาน 40% · ประหยัดค่าซ่อม 25%
+· ส่งตรงเวลาขึ้น 18% จากข้อมูลลูกค้าจริงปี 2024
+
+ระบบ route optimization รวมอยู่ในแพ็กเกจ
+ไม่มีค่าติดตั้งเพิ่ม ไม่มีสัญญาผูกมัดปีแรก
+<span class="cmd">→ คำนวณ ROI ของคุณได้เลย: [LINK]</span>
+<span class="muted">VISUAL NOTE: infographic ตัวเลข 3 ข้อ ดีไซน์สะอาด</span>
+
+<span class="head">== VARIANT C — URGENCY ==</span>
+เหลืออีก 7 วัน — โปรเปิดตัว EV Fleet รับส่วนลด 15%
+พร้อม onboarding ฟรีมูลค่า 25,000 บาท
+
+รับได้เพียง 20 บริษัทแรกเท่านั้น
+<span class="cmd">→ จองสิทธิ์ก่อนหมดเขต: [LINK]</span>
+<span class="muted">VISUAL NOTE: countdown timer · badge "20 ที่นั่งสุดท้าย"</span></pre>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
