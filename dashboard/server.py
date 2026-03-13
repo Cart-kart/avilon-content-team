@@ -1543,7 +1543,8 @@ async function pushUrgentNews() {
   if (!headline) {
     const hl = document.getElementById('urgent-headline');
     hl.style.borderColor = 'rgba(239,68,68,0.9)';
-    setTimeout(() => hl.style.borderColor = '', 1500);
+    hl.placeholder = '⚠️ Headline is required — please enter the news title';
+    setTimeout(() => { hl.style.borderColor = ''; hl.placeholder = 'e.g. avilonROBOTICS signs MOU with Bangkok Airways...'; }, 3000);
     return;
   }
   const btn = document.getElementById('urgent-push-btn');
@@ -1956,21 +1957,23 @@ def parse_urgent_draft():
         return None
     meta = {}
     lines = content.splitlines()
+    # Count dashes to find frontmatter boundaries
+    dash_count = 0
+    post_lines = []
     for line in lines:
-        for key in ["TYPE", "WRITTEN BY", "ASSIGNED BY", "STATUS", "GENERATED", "DEADLINE"]:
-            if line.startswith(key + ":"):
-                meta[key.lower().replace(" ", "_")] = line.split(":", 1)[1].strip()
-    post_body = ""
-    in_post = False
-    for line in lines:
-        if line.startswith("---") and in_post:
-            break
-        if in_post:
-            post_body += line + "\n"
-        if line.startswith("---") and not in_post and meta:
-            in_post = True
-    meta["body"] = post_body.strip()
-    return meta
+        if line.strip() == "---":
+            dash_count += 1
+            continue
+        if dash_count < 2:
+            # Inside frontmatter — extract metadata
+            for key in ["TYPE", "WRITTEN BY", "ASSIGNED BY", "STATUS", "GENERATED", "DEADLINE"]:
+                if line.startswith(key + ":"):
+                    meta[key.lower().replace(" ", "_")] = line.split(":", 1)[1].strip()
+        else:
+            # After closing --- : actual post content
+            post_lines.append(line)
+    meta["body"] = "\n".join(post_lines).strip()
+    return meta if meta else None
 
 @app.route("/api/urgent", methods=["POST"])
 def post_urgent():
