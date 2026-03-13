@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, render_template_string, request
-import os, re, json
+import os, re, json, uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -101,6 +101,18 @@ def parse_brief():
             if line.startswith(key + ":"):
                 brief[key.lower().replace(" ", "_")] = line.split(":", 1)[1].strip()
     return brief
+
+def get_agent_commands():
+    path = BASE / "plans/agent-commands.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except:
+        return []
+
+def save_agent_commands(commands):
+    path = BASE / "plans/agent-commands.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(commands, ensure_ascii=False, indent=2), encoding="utf-8")
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -389,6 +401,169 @@ DASHBOARD_HTML = """
     cursor: pointer;
     margin-left: 8px;
   }
+
+  /* ── Agent Command Center ── */
+  .acc-tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+  .acc-tab {
+    background: #0f1117;
+    border: 1px solid #ffffff15;
+    color: #888;
+    padding: 7px 18px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.5px;
+  }
+  .acc-tab:hover { border-color: #00d4ff55; color: #ccc; }
+  .acc-tab.active {
+    background: #00d4ff18;
+    border-color: #00d4ff;
+    color: #00d4ff;
+  }
+
+  .acc-panel { display: none; }
+  .acc-panel.active { display: block; }
+
+  .acc-agent-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .acc-agent-icon {
+    width: 48px; height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    background: #00d4ff12;
+    border: 1px solid #00d4ff33;
+    flex-shrink: 0;
+  }
+  .acc-agent-name { font-size: 15px; font-weight: 700; color: #fff; }
+  .acc-agent-role { font-size: 12px; color: #666; margin-top: 2px; }
+
+  .acc-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 900px) { .acc-body { grid-template-columns: 1fr; } }
+
+  .acc-input-col, .acc-output-col { display: flex; flex-direction: column; gap: 10px; }
+
+  .acc-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #555;
+    margin-bottom: 2px;
+  }
+
+  .acc-textarea {
+    background: #0f1117;
+    border: 1px solid #ffffff15;
+    border-radius: 8px;
+    padding: 12px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: 'Segoe UI', sans-serif;
+    outline: none;
+    resize: vertical;
+    min-height: 90px;
+    transition: border 0.2s;
+    width: 100%;
+  }
+  .acc-textarea:focus { border-color: #00d4ff55; }
+
+  .acc-send-btn {
+    background: linear-gradient(90deg, #00d4ff22, #00ff8822);
+    border: 1px solid #00d4ff66;
+    color: #00d4ff;
+    padding: 10px 22px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    align-self: flex-start;
+  }
+  .acc-send-btn:hover { background: linear-gradient(90deg, #00d4ff33, #00ff8833); border-color: #00d4ff99; }
+  .acc-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .acc-confirm {
+    font-size: 12px;
+    color: #00ff88;
+    font-weight: 700;
+    display: none;
+    margin-top: 2px;
+  }
+
+  .acc-suggestions { display: flex; flex-direction: column; gap: 6px; }
+  .acc-suggestion-btn {
+    background: #0f1117;
+    border: 1px solid #ffffff10;
+    color: #aaa;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s;
+  }
+  .acc-suggestion-btn:hover { border-color: #00d4ff44; color: #e0e0e0; background: #00d4ff08; }
+
+  .acc-response-area {
+    background: #0f1117;
+    border: 1px solid #ffffff08;
+    border-radius: 8px;
+    padding: 12px;
+    min-height: 120px;
+    max-height: 260px;
+    overflow-y: auto;
+    font-size: 12px;
+    color: #888;
+    font-family: monospace;
+    line-height: 1.6;
+  }
+
+  .acc-cmd-item {
+    padding: 6px 0;
+    border-bottom: 1px solid #ffffff06;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .acc-cmd-item:last-child { border-bottom: none; }
+  .acc-cmd-agent {
+    font-size: 10px;
+    font-weight: 700;
+    color: #00d4ff;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 90px;
+  }
+  .acc-cmd-text { flex: 1; color: #ccc; font-size: 12px; }
+  .acc-cmd-time { font-size: 10px; color: #444; white-space: nowrap; flex-shrink: 0; }
+  .acc-cmd-status {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    flex-shrink: 0;
+  }
+  .acc-cmd-status.pending { background: #ffaa0022; border: 1px solid #ffaa00; color: #ffcc44; }
+  .acc-cmd-status.done    { background: #00ff8822; border: 1px solid #00ff88; color: #00ff88; }
+  .acc-cmd-status.error   { background: #ff333322; border: 1px solid #ff3333; color: #ff6666; }
 </style>
 </head>
 <body>
@@ -534,6 +709,196 @@ DASHBOARD_HTML = """
     </div>
   </div>
 
+  <!-- Agent Command Center -->
+  <div class="card full">
+    <div class="card-title">
+      <div class="dot" style="background:#00d4ff"></div>
+      Agent Command Center
+    </div>
+
+    <!-- Agent tabs -->
+    <div class="acc-tabs">
+      <button class="acc-tab active" onclick="switchAccTab('trend-monitor', this)">📡 Trend Monitor</button>
+      <button class="acc-tab" onclick="switchAccTab('editor-in-chief', this)">🎬 Editor in Chief</button>
+      <button class="acc-tab" onclick="switchAccTab('tech-writer', this)">✍️ Tech Writer</button>
+      <button class="acc-tab" onclick="switchAccTab('ad-writer', this)">📢 Ad Writer</button>
+      <button class="acc-tab" onclick="switchAccTab('proofreader', this)">✅ Proofreader</button>
+    </div>
+
+    <!-- trend-monitor panel -->
+    <div class="acc-panel active" id="acc-trend-monitor">
+      <div class="acc-agent-header">
+        <div class="acc-agent-icon">📡</div>
+        <div>
+          <div class="acc-agent-name">Trend Monitor</div>
+          <div class="acc-agent-role">Scans social media, news, and industry sources for emerging trends relevant to logistics &amp; robotics in Thailand.</div>
+        </div>
+      </div>
+      <div class="acc-body">
+        <div class="acc-input-col">
+          <div class="acc-label">Command / Instruction</div>
+          <textarea class="acc-textarea" id="cmd-trend-monitor" placeholder="e.g. Scan for Thailand logistics automation trends this week..."></textarea>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <button class="acc-send-btn" onclick="sendAgentCommand('trend-monitor')">Send to Agent →</button>
+            <span class="acc-confirm" id="confirm-trend-monitor">Command queued ✓</span>
+          </div>
+          <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
+          <div class="acc-suggestions">
+            <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','🔍 Scan trends now')">🔍 Scan trends now</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','📊 Weekly trend report')">📊 Weekly trend report</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('trend-monitor','🇹🇭 Thailand logistics news only')">🇹🇭 Thailand logistics news only</button>
+          </div>
+        </div>
+        <div class="acc-output-col">
+          <div class="acc-label">Last Agent Response / Output</div>
+          <div class="acc-response-area" id="resp-trend-monitor">
+            <span style="color:#444">No response yet — send a command to get started.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- editor-in-chief panel -->
+    <div class="acc-panel" id="acc-editor-in-chief">
+      <div class="acc-agent-header">
+        <div class="acc-agent-icon">🎬</div>
+        <div>
+          <div class="acc-agent-name">Editor in Chief</div>
+          <div class="acc-agent-role">Runs the weekly content campaign, assigns briefs to writers, and manages the editorial calendar.</div>
+        </div>
+      </div>
+      <div class="acc-body">
+        <div class="acc-input-col">
+          <div class="acc-label">Command / Instruction</div>
+          <textarea class="acc-textarea" id="cmd-editor-in-chief" placeholder="e.g. Run this week's campaign and assign a KNOWLEDGE post on Photon Inventra..."></textarea>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <button class="acc-send-btn" onclick="sendAgentCommand('editor-in-chief')">Send to Agent →</button>
+            <span class="acc-confirm" id="confirm-editor-in-chief">Command queued ✓</span>
+          </div>
+          <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
+          <div class="acc-suggestions">
+            <button class="acc-suggestion-btn" onclick="fillCmd('editor-in-chief','🚀 Run weekly campaign')">🚀 Run weekly campaign</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('editor-in-chief','📋 Assign Photon Inventra post')">📋 Assign Photon Inventra post</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('editor-in-chief','📅 Plan next 4 posts')">📅 Plan next 4 posts</button>
+          </div>
+        </div>
+        <div class="acc-output-col">
+          <div class="acc-label">Last Agent Response / Output</div>
+          <div class="acc-response-area" id="resp-editor-in-chief">
+            <span style="color:#444">No response yet — send a command to get started.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tech-writer panel -->
+    <div class="acc-panel" id="acc-tech-writer">
+      <div class="acc-agent-header">
+        <div class="acc-agent-icon">✍️</div>
+        <div>
+          <div class="acc-agent-name">Tech Writer</div>
+          <div class="acc-agent-role">Writes Facebook posts — KNOWLEDGE articles, SOFT SELL stories, and TRENDJACKING content.</div>
+        </div>
+      </div>
+      <div class="acc-body">
+        <div class="acc-input-col">
+          <div class="acc-label">Command / Instruction</div>
+          <textarea class="acc-textarea" id="cmd-tech-writer" placeholder="e.g. Write a KNOWLEDGE post about warehouse automation for SMEs in Thailand..."></textarea>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <button class="acc-send-btn" onclick="sendAgentCommand('tech-writer')">Send to Agent →</button>
+            <span class="acc-confirm" id="confirm-tech-writer">Command queued ✓</span>
+          </div>
+          <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
+          <div class="acc-suggestions">
+            <button class="acc-suggestion-btn" onclick="fillCmd('tech-writer','✍️ Write KNOWLEDGE post')">✍️ Write KNOWLEDGE post</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('tech-writer','💡 Write SOFT SELL post')">💡 Write SOFT SELL post</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('tech-writer','📈 Write TRENDJACKING post')">📈 Write TRENDJACKING post</button>
+          </div>
+        </div>
+        <div class="acc-output-col">
+          <div class="acc-label">Last Agent Response / Output</div>
+          <div class="acc-response-area" id="resp-tech-writer">
+            <span style="color:#444">No response yet — send a command to get started.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ad-writer panel -->
+    <div class="acc-panel" id="acc-ad-writer">
+      <div class="acc-agent-header">
+        <div class="acc-agent-icon">📢</div>
+        <div>
+          <div class="acc-agent-name">Ad Writer</div>
+          <div class="acc-agent-role">Creates HARD SELL ad copy, CTA variants, and promotional posts for avilonROBOTICS products.</div>
+        </div>
+      </div>
+      <div class="acc-body">
+        <div class="acc-input-col">
+          <div class="acc-label">Command / Instruction</div>
+          <textarea class="acc-textarea" id="cmd-ad-writer" placeholder="e.g. Write 3 HARD SELL variants for Photon Inventra demo offer..."></textarea>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <button class="acc-send-btn" onclick="sendAgentCommand('ad-writer')">Send to Agent →</button>
+            <span class="acc-confirm" id="confirm-ad-writer">Command queued ✓</span>
+          </div>
+          <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
+          <div class="acc-suggestions">
+            <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','📢 Write HARD SELL (3 variants)')">📢 Write HARD SELL (3 variants)</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','🎯 Photon Inventra CTA')">🎯 Photon Inventra CTA</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('ad-writer','💰 Promo post')">💰 Promo post</button>
+          </div>
+        </div>
+        <div class="acc-output-col">
+          <div class="acc-label">Last Agent Response / Output</div>
+          <div class="acc-response-area" id="resp-ad-writer">
+            <span style="color:#444">No response yet — send a command to get started.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- proofreader panel -->
+    <div class="acc-panel" id="acc-proofreader">
+      <div class="acc-agent-header">
+        <div class="acc-agent-icon">✅</div>
+        <div>
+          <div class="acc-agent-name">Proofreader</div>
+          <div class="acc-agent-role">Reviews drafts for quality, tone, grammar, and brand consistency. Approves or flags for revision.</div>
+        </div>
+      </div>
+      <div class="acc-body">
+        <div class="acc-input-col">
+          <div class="acc-label">Command / Instruction</div>
+          <textarea class="acc-textarea" id="cmd-proofreader" placeholder="e.g. Review the latest draft and check tone and hashtags..."></textarea>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <button class="acc-send-btn" onclick="sendAgentCommand('proofreader')">Send to Agent →</button>
+            <span class="acc-confirm" id="confirm-proofreader">Command queued ✓</span>
+          </div>
+          <div class="acc-label" style="margin-top:8px">Quick Suggestions</div>
+          <div class="acc-suggestions">
+            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','✅ Review latest draft')">✅ Review latest draft</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','🔍 Full QA check')">🔍 Full QA check</button>
+            <button class="acc-suggestion-btn" onclick="fillCmd('proofreader','📝 Fix and approve')">📝 Fix and approve</button>
+          </div>
+        </div>
+        <div class="acc-output-col">
+          <div class="acc-label">Last Agent Response / Output</div>
+          <div class="acc-response-area" id="resp-proofreader">
+            <span style="color:#444">No response yet — send a command to get started.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Command History -->
+    <div style="margin-top:24px;border-top:1px solid #ffffff08;padding-top:16px">
+      <div class="acc-label" style="margin-bottom:10px">Recent Command History <span id="acc-history-refresh" style="color:#444;font-size:10px;font-weight:normal;margin-left:6px"></span></div>
+      <div id="acc-cmd-history" style="max-height:200px;overflow-y:auto">
+        <div class="empty">No commands sent yet</div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -672,11 +1037,91 @@ async function clearFeedback() {
   loadFeedback();
 }
 
+// ── Agent Command Center ──
+
+function switchAccTab(agentId, btn) {
+  document.querySelectorAll('.acc-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.acc-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('acc-' + agentId).classList.add('active');
+}
+
+function fillCmd(agentId, text) {
+  const ta = document.getElementById('cmd-' + agentId);
+  if (ta) { ta.value = text; ta.focus(); }
+}
+
+async function sendAgentCommand(agentId) {
+  const ta = document.getElementById('cmd-' + agentId);
+  const confirm = document.getElementById('confirm-' + agentId);
+  const btn = ta.closest('.acc-input-col').querySelector('.acc-send-btn');
+  const command = ta.value.trim();
+  if (!command) { ta.focus(); ta.style.borderColor = '#ff333388'; setTimeout(() => ta.style.borderColor = '', 1000); return; }
+
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/agent/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agentId, command })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      confirm.style.display = 'inline';
+      ta.value = '';
+      setTimeout(() => { confirm.style.display = 'none'; }, 3000);
+      loadAgentCommands();
+    }
+  } catch (e) {
+    alert('Error sending command — is the server running?');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadAgentCommands() {
+  try {
+    const res = await fetch('/api/agent/commands');
+    const items = await res.json();
+    const el = document.getElementById('acc-cmd-history');
+    const ts = document.getElementById('acc-history-refresh');
+    ts.textContent = '— refreshed ' + new Date().toLocaleTimeString('th-TH');
+
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">No commands sent yet</div>';
+      return;
+    }
+
+    const statusClass = { pending: 'pending', done: 'done', error: 'error' };
+    el.innerHTML = items.map(c => `
+      <div class="acc-cmd-item">
+        <span class="acc-cmd-agent">${c.agent}</span>
+        <span class="acc-cmd-text">${c.command}</span>
+        <span class="acc-cmd-time">${c.timestamp ? c.timestamp.replace('T',' ').slice(0,16) : ''}</span>
+        <span class="acc-cmd-status ${statusClass[c.status] || 'pending'}">${c.status || 'pending'}</span>
+      </div>`).join('');
+
+    // Populate last response per agent
+    const agents = ['trend-monitor','editor-in-chief','tech-writer','ad-writer','proofreader'];
+    agents.forEach(a => {
+      const last = items.filter(c => c.agent === a && c.response).pop();
+      const respEl = document.getElementById('resp-' + a);
+      if (respEl && last && last.response) {
+        respEl.textContent = last.response;
+      }
+    });
+  } catch (e) {
+    // silently fail — server may not have the route yet
+  }
+}
+
 // Auto-refresh every 60 seconds
 fetchData();
 loadFeedback();
+loadAgentCommands();
 setInterval(fetchData, 60000);
 setInterval(loadFeedback, 30000);
+setInterval(loadAgentCommands, 30000);
 setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleString('th-TH');
 }, 1000);
@@ -720,6 +1165,32 @@ def api_data():
         "brief": parse_brief(),
         "timestamp": datetime.now().isoformat()
     })
+
+@app.route("/api/agent/command", methods=["POST"])
+def post_agent_command():
+    data = request.get_json(force=True, silent=True) or {}
+    agent = data.get("agent", "").strip()
+    command = data.get("command", "").strip()
+    if not agent or not command:
+        return jsonify({"ok": False, "error": "agent and command are required"}), 400
+
+    commands = get_agent_commands()
+    entry = {
+        "id": str(uuid.uuid4())[:8],
+        "agent": agent,
+        "command": command,
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending",
+        "response": ""
+    }
+    commands.append(entry)
+    save_agent_commands(commands)
+    return jsonify({"ok": True, "id": entry["id"]})
+
+@app.route("/api/agent/commands", methods=["GET"])
+def get_agent_commands_route():
+    commands = get_agent_commands()
+    return jsonify(commands[-10:])
 
 if __name__ == "__main__":
     print("avilonROBOTICS Dashboard running at http://localhost:5050")
